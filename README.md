@@ -6,9 +6,22 @@ composite layouts, and slide rendering -- all accessible via the Model Context P
 
 ## Installation
 
+`pptx-mcp-server` ships with two install paths: a minimal library install for
+driving the engine programmatically, and an `[mcp]` extra for running the MCP
+server CLI.
+
 ```bash
+# Library usage (no MCP runtime — only python-pptx + lxml):
 pip install pptx-mcp-server
+
+# MCP server (includes the mcp SDK):
+pip install 'pptx-mcp-server[mcp]'
 ```
+
+The MCP SDK lives behind the `[mcp]` extra so that pure-library consumers do
+not pay for the MCP SDK + anyio transitive dependencies at install time. The
+`pptx-mcp-server` CLI and `pptx_mcp_server.server` module require the `[mcp]`
+extra; importing them without it raises a clear ImportError pointing back here.
 
 ## Claude Desktop Configuration
 
@@ -44,13 +57,14 @@ without starting an MCP server. The `engine` and `theme` modules have no
 dependency on the MCP SDK at import time, so you can build decks from scripts,
 notebooks, or batch jobs.
 
-Install it the same way you would any other package:
+Install it the same way you would any other package — the bare install does
+not pull the MCP SDK:
 
 ```bash
-# From PyPI (once published)
+# From PyPI (once published) — library only:
 pip install pptx-mcp-server
 
-# From a local checkout (editable install during development)
+# From a local checkout (editable install during development):
 pip install -e /path/to/pptx-mcp-server
 ```
 
@@ -79,9 +93,12 @@ prs = open_pptx(out)
 print(f"Slides: {len(prs.slides)}")
 ```
 
-The `mcp` SDK is still listed in `dependencies` so that the `pptx-mcp-server`
-entry point works out of the box, but nothing in `pptx_mcp_server.engine` or
-`pptx_mcp_server.theme` imports it — a CI guardrail test enforces this.
+The `mcp` SDK is an **optional** extra (`pip install 'pptx-mcp-server[mcp]'`)
+and is only required when launching the `pptx-mcp-server` CLI / importing
+`pptx_mcp_server.server`. Nothing in `pptx_mcp_server.engine` or
+`pptx_mcp_server.theme` imports it — an AST-level CI guardrail in
+`tests/test_library_usage.py` enforces that, and
+`tests/test_packaging_extras.py` enforces the packaging side of the split.
 
 ## Tools
 
@@ -142,11 +159,17 @@ entry point works out of the box, but nothing in `pptx_mcp_server.engine` or
 
 ## Dependencies
 
+Required (installed by `pip install pptx-mcp-server`):
+
 - [python-pptx](https://python-pptx.readthedocs.io/) -- PPTX file manipulation
 - [lxml](https://lxml.de/) -- XML processing
-- [mcp](https://modelcontextprotocol.io/) -- Model Context Protocol SDK
 
-### Optional
+Optional extra (installed by `pip install 'pptx-mcp-server[mcp]'`):
+
+- [mcp](https://modelcontextprotocol.io/) -- Model Context Protocol SDK
+  (required only for the `pptx-mcp-server` CLI / `pptx_mcp_server.server`)
+
+### System tools
 
 - **LibreOffice** -- required for `pptx_render_slide` (PPTX to PDF conversion).
   Install with `brew install --cask libreoffice` (macOS) or your system package manager.

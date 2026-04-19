@@ -24,10 +24,12 @@ classifiers = [
     "Topic :: Office/Business",
 ]
 dependencies = [
-    "mcp>=1.0.0",
     "python-pptx>=1.0.0",
     "lxml>=4.0.0",
 ]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/knorq/pptx-mcp-server"
