@@ -121,7 +121,10 @@ def check_slide_overlaps(
 
                 area_i = (bi[2] - bi[0]) * (bi[3] - bi[1])
                 area_j = (bj[2] - bj[0]) * (bj[3] - bj[1])
-                if min(area_i, area_j) < 1.0:
+                # 2026-04 #77: 旧閾値 1.0 sq in は通常の単行 text label (2.3"×0.35"=0.805 sq in)
+                # を取り逃がしていた。本当に "tiny" な shape は既に `_is_small_decorative`
+                # (h<0.08 or w<0.08 or area<0.05) で除外されているため、0.15 に緩める。
+                if min(area_i, area_j) < 0.15:
                     continue
 
                 name_i = si.name or f"Shape {i}"
@@ -137,7 +140,8 @@ def check_slide_overlaps(
                     h_gap = max(0, max(bi[0], bj[0]) - min(bi[2], bj[2]))
                     v_gap = max(0, max(bi[1], bj[1]) - min(bi[3], bj[3]))
                     min_gap = max(h_gap, v_gap)
-                    if area_i > 1.0 and area_j > 1.0:
+                    # 同 threshold に揃える (#77)。
+                    if area_i > 0.15 and area_j > 0.15:
                         warnings.append(
                             f"TOO CLOSE (gap {min_gap:.2f}\"): "
                             f"'{name_i}' at ({bi[0]:.1f},{bi[1]:.1f},{bi[2]:.1f},{bi[3]:.1f}) "
