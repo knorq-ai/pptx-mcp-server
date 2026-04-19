@@ -19,6 +19,7 @@ from .engine import (
     set_slide_background,
     add_textbox,
     add_auto_fit_textbox_file,
+    add_flex_container_file,
     add_shape,
     add_image,
     edit_text,
@@ -385,6 +386,46 @@ def pptx_add_auto_fit_textbox(
             align=align,
             vertical_anchor=vertical_anchor,
             truncate_with_ellipsis=truncate_with_ellipsis,
+        )
+        return json.dumps(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_flex_container(
+    file_path: str,
+    slide_index: int,
+    items: list,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    direction: str = "row",
+    gap: float = 0.15,
+    padding: float = 0.0,
+    align: str = "stretch",
+) -> str:
+    """Add a CSS-flexbox-style container that lays out child items along a main axis.
+
+    `items` is a list of dicts with:
+      - `sizing`: "fixed" | "grow" | "content"
+      - `type`: "text" | "rectangle"
+      - `size` (for fixed), `grow` (for grow, default 1), `content_size` (for content)
+      - optional `min_size`, `max_size`
+      - for type=text: `text`, `font_size_pt`, `bold`, `color_hex`, `align`, `vertical_anchor`, `truncate_with_ellipsis`
+      - for type=rectangle: `fill_color`, `line_color`, `line_width`, `no_line`
+
+    direction: "row" (horizontal) | "column" (vertical). gap and padding in inches.
+    align cross-axis: "stretch" | "start" | "center" | "end" (MVP treats all as stretch for size).
+
+    Returns JSON with allocations (per-item [left, top, width, height]) and shape identifiers created.
+    """
+    try:
+        result = add_flex_container_file(
+            file_path, slide_index, items,
+            left=left, top=top, width=width, height=height,
+            direction=direction, gap=gap, padding=padding, align=align,
         )
         return json.dumps(result)
     except Exception as e:

@@ -78,6 +78,11 @@ from .connectors import (
     _add_connector,
     _add_callout,
 )
+from .flex import (
+    FlexItem,
+    add_flex_container,
+    add_flex_container_file,
+)
 from .composites import (
     add_content_slide,
     add_section_divider,
@@ -121,6 +126,8 @@ __all__ = [
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",
+    # Flex
+    "FlexItem", "add_flex_container", "add_flex_container_file",
     # Rendering
     "render_slide", "render_slide_to_path",
 ]
