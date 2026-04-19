@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+from ._validate import validate_flex_geometry
 from .pptx_io import EngineError, ErrorCode, open_pptx, save_pptx, _get_slide
 from .shapes import _add_shape, add_auto_fit_textbox
 
@@ -244,6 +245,12 @@ def add_flex_container(
             ErrorCode.INVALID_PARAMETER,
             f"align={align!r} is not yet implemented; use 'stretch' for MVP.",
         )
+
+    # #85: コンテナ幾何 (width/height/padding/gap) の fail-fast 検証。
+    # ``_validate_items`` (項目単位) と役割を分ける。
+    validate_flex_geometry(
+        width=width, height=height, padding=padding, gap=gap,
+    )
 
     # #72: 分配ロジックに入る前に各項目の宣言値を検証する。
     # ``_distribute_grow`` は min-clamp を先に適用するため、``min_size >
@@ -469,7 +476,12 @@ def _build_declarative_item(
         truncate = bool(spec.get("truncate_with_ellipsis", True))
 
         def render_text(x: float, y: float, w: float, h: float) -> None:
-            shape, actual = add_auto_fit_textbox(
+            # #84: identity 検索は save_pptx 後には失敗する (``os.replace``
+            # による原子的 rename で ``slide.shapes`` が再構築される)。
+            # ``add_auto_fit_textbox`` はこの瞬間に必ず末尾に shape を追加
+            # するので、追加直前の長さを記録するのが正しい。
+            idx = len(slide.shapes)
+            _shape, actual = add_auto_fit_textbox(
                 slide, text, x, y, w, h,
                 font_name=font_name,
                 font_size_pt=font_size_pt,
@@ -480,11 +492,6 @@ def _build_declarative_item(
                 vertical_anchor=vertical_anchor,
                 truncate_with_ellipsis=truncate,
             )
-            idx = -1
-            for i, s in enumerate(slide.shapes):
-                if s is shape:
-                    idx = i
-                    break
             created_shape_indices.append({
                 "type": "text",
                 "shape_index": idx,

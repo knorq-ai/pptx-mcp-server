@@ -208,3 +208,128 @@ def test_production_subtitle_11_5x0_5(slide):
     # 切り詰めが起きない場合、本文は保持されているはず (またはオーバーフロー
     # で truncate 発動)。いずれにせよ空ではない。
     assert shape.text_frame.text != ""
+
+
+# -----------------------------------------------------------------------------
+# #85: fail-fast geometry validation
+# -----------------------------------------------------------------------------
+
+
+class TestAutoFitGeometryValidation:
+    """``add_auto_fit_textbox`` が不正な幾何/フォント指定を拒否する (#85)."""
+
+    def test_zero_width_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=0.0, height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+        assert "0" in str(exc.value)
+
+    def test_negative_width_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=-0.5, height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_zero_height_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=1.0, height=0.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "height" in str(exc.value)
+
+    def test_negative_height_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=1.0, height=-1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "height" in str(exc.value)
+
+    def test_zero_font_size_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=1.0, height=1.0,
+                font_size_pt=0, min_size_pt=7,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "font_size_pt" in str(exc.value)
+
+    def test_negative_min_size_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=1.0, height=1.0,
+                font_size_pt=11, min_size_pt=-1,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "min_size_pt" in str(exc.value)
+
+    def test_min_size_greater_than_font_size_rejected(self, slide):
+        """``min_size_pt > font_size_pt`` は auto-fit 契約違反."""
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=1.0, height=1.0,
+                font_size_pt=8, min_size_pt=20,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "min_size_pt" in str(exc.value)
+        assert "font_size_pt" in str(exc.value)
+
+    def test_nan_width_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=float("nan"), height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_inf_height_rejected(self, slide):
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+        with pytest.raises(EngineError) as exc:
+            add_auto_fit_textbox(
+                slide, "x",
+                left=0.0, top=0.0, width=1.0, height=float("inf"),
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "height" in str(exc.value)
+
+    def test_tiny_boundary_valid_ok(self, slide):
+        """境界有効値 (width=0.01, height=0.01) は通る."""
+        shape, actual = add_auto_fit_textbox(
+            slide, "x",
+            left=0.0, top=0.0, width=0.01, height=0.01,
+            font_size_pt=7, min_size_pt=7,
+        )
+        assert actual == 7.0
+        assert shape is not None
+
+    def test_equal_min_and_font_size_ok(self, slide):
+        """``min_size_pt == font_size_pt`` は許容される."""
+        shape, actual = add_auto_fit_textbox(
+            slide, "Hi",
+            left=0.0, top=0.0, width=1.0, height=0.5,
+            font_size_pt=10, min_size_pt=10,
+        )
+        assert actual == 10.0
+        assert shape is not None

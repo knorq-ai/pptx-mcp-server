@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from ._validate import validate_card_row_geometry
 from .layout_constants import (
     TEXTBOX_INNER_PADDING_PER_SIDE as _AUTO_FIT_PADDING_PER_SIDE,
 )
@@ -353,6 +354,16 @@ def add_responsive_card_row(
                 f"got {height_mode!r}"
             ),
         )
+
+    # #85: コンテナ幾何 (width/max_height/gap/min_card_height) の fail-fast
+    # 検証。``max_height < min_card_height`` のような矛盾制約や負値を拒否し、
+    # 既存の "min_card_height がサイレントに max_height を上書き" パスを塞ぐ。
+    validate_card_row_geometry(
+        width=width,
+        max_height=max_height,
+        gap=gap,
+        min_card_height=min_card_height,
+    )
 
     n = len(cards)
     if n == 0:

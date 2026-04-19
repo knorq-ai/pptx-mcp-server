@@ -454,3 +454,114 @@ def test_card_placement_dataclass_shape():
     """``CardPlacement`` は left/top/width/height の 4 フィールドを持つ."""
     p = CardPlacement(left=1.0, top=2.0, width=3.0, height=4.0)
     assert (p.left, p.top, p.width, p.height) == (1.0, 2.0, 3.0, 4.0)
+
+
+# -----------------------------------------------------------------------------
+# #85: fail-fast geometry validation
+# -----------------------------------------------------------------------------
+
+
+class TestCardRowGeometryValidation:
+    """``add_responsive_card_row`` が不正な幾何指定を拒否する (#85)."""
+
+    def _one_card(self) -> list[CardSpec]:
+        return [CardSpec(title="T", body="b")]
+
+    def test_zero_width_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=0.0, max_height=2.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_negative_width_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=-1.0, max_height=2.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_zero_max_height_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=5.0, max_height=0.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "max_height" in str(exc.value)
+
+    def test_negative_gap_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide,
+                [CardSpec(title="A"), CardSpec(title="B")],
+                left=0.0, top=0.0, width=5.0, max_height=2.0,
+                gap=-0.2,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "gap" in str(exc.value)
+
+    def test_negative_min_card_height_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=5.0, max_height=2.0,
+                min_card_height=-0.1,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "min_card_height" in str(exc.value)
+
+    def test_max_height_less_than_min_card_height_rejected(self, slide):
+        """矛盾制約: ``max_height < min_card_height``."""
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=5.0,
+                max_height=0.3, min_card_height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(exc.value)
+        assert "max_height" in msg
+        assert "min_card_height" in msg
+
+    def test_nan_width_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=float("nan"), max_height=2.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_inf_max_height_rejected(self, slide):
+        with pytest.raises(EngineError) as exc:
+            add_responsive_card_row(
+                slide, self._one_card(),
+                left=0.0, top=0.0, width=5.0, max_height=float("inf"),
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "max_height" in str(exc.value)
+
+    def test_zero_gap_and_min_card_height_boundary_ok(self, slide):
+        """gap=0, min_card_height=0 は合法."""
+        placements, consumed = add_responsive_card_row(
+            slide,
+            [CardSpec(title="A"), CardSpec(title="B")],
+            left=0.0, top=0.0, width=5.0, max_height=2.0,
+            gap=0.0, min_card_height=0.0,
+        )
+        assert len(placements) == 2
+        assert consumed > 0.0
+
+    def test_max_height_equals_min_card_height_ok(self, slide):
+        """``max_height == min_card_height`` は合法 (境界)."""
+        placements, consumed = add_responsive_card_row(
+            slide, self._one_card(),
+            left=0.0, top=0.0, width=5.0,
+            max_height=1.0, min_card_height=1.0,
+        )
+        assert len(placements) == 1
