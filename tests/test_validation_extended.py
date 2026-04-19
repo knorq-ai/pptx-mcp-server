@@ -16,6 +16,7 @@ from pptx_mcp_server.engine.validation import (
     ValidationFinding,
     _axis_groups,
     _effective_paragraph_size,
+    _effective_run_size,
     _projected_text_range,
     check_deck_extended,
     check_divider_collision,
@@ -561,6 +562,139 @@ class TestUnreadableWhitelistExtended:
         result = check_deck_extended(one_slide_prs, whitelist_names=["脚注"])
         assert result["slides"][0]["unreadable_text"] == []
         assert result["summary"]["warnings"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #60: check_unreadable_text per-run inherited-size resolution
+# ---------------------------------------------------------------------------
+
+
+def _install_defrpr(paragraph, sz_hundredths: int) -> None:
+    """段落に ``<a:pPr><a:defRPr sz="NN"/></a:pPr>`` を手動で付与する."""
+    from lxml import etree
+
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    p_elem = paragraph._p
+    for existing in p_elem.findall(f"{{{a_ns}}}pPr"):
+        p_elem.remove(existing)
+    p_pr = etree.SubElement(p_elem, f"{{{a_ns}}}pPr")
+    # pPr は段落の先頭子要素にある必要がある
+    p_elem.insert(0, p_pr)
+    etree.SubElement(p_pr, f"{{{a_ns}}}defRPr", {"sz": str(sz_hundredths)})
+
+
+class TestUnreadableRunInheritance:
+    """check_unreadable_text が run ごとに継承サイズを解決することを検証する (Issue #60)."""
+
+    def test_mixed_run_with_inherited_small_run_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 段落に 11pt (明示) run と size=None の run (defRPr sz=600 → 6pt) を同居させる。
+        # 旧実装は「explicit run がある段落は run レベルのみ」で早期確定するため
+        # 継承 6pt を取りこぼす。新実装は run ごとに実効サイズを解決し警告する。
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tb.name = "MixedInheritBox"
+        tf = tb.text_frame
+        tf.text = "A"
+        para = tf.paragraphs[0]
+        # run A: 11pt 明示
+        run_a = para.runs[0]
+        run_a.font.size = Pt(11)
+        # run B: size=None (継承)
+        run_b = para.add_run()
+        run_b.text = "B"
+        assert run_b.font.size is None
+        # 段落 defRPr = 600 (= 6pt)
+        _install_defrpr(para, 600)
+
+        findings = check_unreadable_text(one_slide_prs)
+        matched = [f for f in findings if f.shape_name == "MixedInheritBox"]
+        assert len(matched) == 1
+        assert "6.0pt" in matched[0].message
+
+    def test_mixed_run_all_explicit_readable_no_finding(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 同じ段落内に 11pt と 14pt の明示 run → どちらも閾値以上なので警告なし。
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tb.name = "TwoExplicitBox"
+        tf = tb.text_frame
+        tf.text = "A"
+        para = tf.paragraphs[0]
+        para.runs[0].font.size = Pt(11)
+        run_b = para.add_run()
+        run_b.text = "B"
+        run_b.font.size = Pt(14)
+
+        findings = check_unreadable_text(one_slide_prs)
+        matched = [f for f in findings if f.shape_name == "TwoExplicitBox"]
+        assert matched == []
+
+    def test_all_runs_inherit_readable_defrpr_no_finding(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 全 run が size=None、defRPr sz=900 (9pt) → 閾値 8pt を上回るため警告なし。
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tb.name = "InheritReadableBox"
+        tf = tb.text_frame
+        tf.text = "X"
+        para = tf.paragraphs[0]
+        for run in para.runs:
+            run.font.size = None
+        _install_defrpr(para, 900)
+
+        findings = check_unreadable_text(one_slide_prs)
+        matched = [f for f in findings if f.shape_name == "InheritReadableBox"]
+        assert matched == []
+
+    def test_all_runs_inherit_small_defrpr_flagged_regression(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # Issue #23 の回帰: 全 run が size=None、defRPr sz=600 (6pt) → 警告 1 件。
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tb.name = "InheritSmallBox"
+        tf = tb.text_frame
+        tf.text = "X"
+        para = tf.paragraphs[0]
+        for run in para.runs:
+            run.font.size = None
+        _install_defrpr(para, 600)
+
+        findings = check_unreadable_text(one_slide_prs)
+        matched = [f for f in findings if f.shape_name == "InheritSmallBox"]
+        assert len(matched) == 1
+        assert "6.0pt" in matched[0].message
+
+    def test_effective_run_size_helper_resolves_defrpr(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # helper 単体: size=None の run が defRPr 経由で 6pt を解決できること。
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tf = tb.text_frame
+        tf.text = "A"
+        para = tf.paragraphs[0]
+        para.runs[0].font.size = Pt(11)
+        run_b = para.add_run()
+        run_b.text = "B"
+        _install_defrpr(para, 600)
+
+        assert _effective_run_size(para.runs[0], para, default_pt=18.0) == pytest.approx(11.0)
+        assert _effective_run_size(run_b, para, default_pt=18.0) == pytest.approx(6.0)
 
 
 # ---------------------------------------------------------------------------

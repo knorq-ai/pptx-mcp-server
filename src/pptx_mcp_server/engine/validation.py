@@ -311,6 +311,42 @@ def _effective_paragraph_size(paragraph, default_pt: float = 18.0) -> float:
     return default_pt
 
 
+def _effective_run_size(run, paragraph, default_pt: float = 18.0) -> float:
+    """run の実効フォントサイズ (pt) を解決する.
+
+    優先順:
+        1. ``run.font.size`` (run に明示された値)
+        2. ``paragraph.font.size`` (paragraph の ``rPr`` 由来)
+        3. ``pPr/defRPr/@sz`` (段落既定値)
+        4. ``default_pt`` (フォールバック)
+
+    ``_effective_paragraph_size`` が段落全体の代表サイズ (run の最大値) を
+    返すのに対し、こちらは個別 run の継承サイズを解決する。同一段落内で
+    明示 size を持つ sibling run がいても、``size=None`` の run が defRPr
+    を継承する場合にその pt を正しく得る目的で使う (Issue #60)。
+    """
+    # (1) run レベル
+    size = run.font.size
+    if size is not None:
+        return size.pt
+
+    # (2) paragraph.font.size
+    try:
+        pf_size = paragraph.font.size
+    except Exception:
+        pf_size = None
+    if pf_size is not None:
+        return pf_size.pt
+
+    # (3) pPr/defRPr/@sz
+    defrpr_pt = _pptx_defrpr_size(paragraph)
+    if defrpr_pt is not None:
+        return defrpr_pt
+
+    # (4) デフォルト
+    return default_pt
+
+
 def _dominant_font_size(text_frame, default_pt: float = 18.0) -> float:
     """text_frame 内の段落で最大の実効フォントサイズ (pt) を返す.
 
@@ -560,23 +596,27 @@ def check_unreadable_text(
             if _is_footer_zone_shape(shape, tf, slide_height_in, min_readable_pt):
                 continue
             smallest: Optional[float] = None
-            # run に明示された size を優先、無い場合は段落の実効サイズを見る
+            # run 単位で実効サイズを解決する。明示 size のある sibling run が
+            # いても、``size=None`` の run が defRPr を継承するケースを取り
+            # こぼさない (Issue #60)。
             for para in tf.paragraphs:
-                seen_run_size = False
-                for run in para.runs:
-                    size = run.font.size
-                    if size is None:
-                        continue
-                    seen_run_size = True
-                    pt = size.pt
-                    if pt < min_readable_pt:
-                        if smallest is None or pt < smallest:
-                            smallest = pt
-                if not seen_run_size:
-                    # 段落レベル (paragraph.font.size / defRPr) を評価する
-                    # defRPr 経路で書かれた小フォントも確実に検出する
-                    eff_pt = _effective_paragraph_size(para, default_pt=min_readable_pt)
-                    # default_pt に閾値を入れているので defRPr 等で明示されない限り検出しない
+                runs = list(para.runs)
+                if runs:
+                    for run in runs:
+                        # 明示されない場合は min_readable_pt をフォールバックに
+                        # することで、defRPr 等で明示されない限り警告しない
+                        # ("size 不明 = 読みにくい" と誤警告しない) 挙動を保つ。
+                        eff_pt = _effective_run_size(
+                            run, para, default_pt=min_readable_pt
+                        )
+                        if eff_pt < min_readable_pt:
+                            if smallest is None or eff_pt < smallest:
+                                smallest = eff_pt
+                else:
+                    # run を持たない段落 (空段落) は paragraph / defRPr のみを見る
+                    eff_pt = _effective_paragraph_size(
+                        para, default_pt=min_readable_pt
+                    )
                     if eff_pt < min_readable_pt:
                         if smallest is None or eff_pt < smallest:
                             smallest = eff_pt
