@@ -69,6 +69,38 @@ miscalibrations, not hide them behind tight bands. If you change a width
 constant, re-run locally and update bands only if they reflect a genuine
 improvement; do NOT loosen bands to paper over a new miscalibration.
 
+### Adding a new script
+
+Only ASCII/Latin-1 + CJK are currently calibrated. Hangul, Arabic, Thai,
+Devanagari, Hebrew, etc. fall back to ASCII-normal width and will
+silently mis-layout (see README "Supported scripts" for the matrix). If
+you need one of these, follow this process so the new script is
+permanently covered by the calibration suite rather than bolted on ad hoc:
+
+1. **Add the Unicode range(s)** — extend `_CJK_RANGES` in
+   `src/pptx_mcp_server/engine/text_metrics.py`, or introduce a new script
+   set alongside it if the script does not share CJK width characteristics.
+   For non-em-width scripts, also add a predicate like `is_half_width_kana`.
+2. **Add or calibrate a width constant** — e.g.
+   `_HANGUL_WIDTH_PER_PT: float = ...`. Derive the value by running
+   `scripts/calibrate_ascii.py` (or a script modelled on it) against a real
+   system font for that script and taking the harmonic-mean representative
+   across the bucket, not a hand-picked value.
+3. **Extend `tests/test_calibration.py`** — add parametrize entries with
+   sentinel characters from the new script and a tolerance band
+   consistent with the rest of the suite.
+4. **Add font path candidates** — `tests/calibration_helpers.py` enumerates
+   system-font probe paths. Add the new script's font (e.g. Noto Sans KR,
+   Noto Naskh Arabic) to both the macOS and Linux probe lists so the
+   test skips cleanly when the font is missing and runs when it is present.
+5. **Document in the README matrix** — move the script row from
+   "Unsupported" to "Supported" and state the accuracy band. Update the
+   module docstring of `text_metrics.py` accordingly.
+
+PRs adding a new script without all five steps will be asked to split:
+the calibration constant is meaningless without the calibration test, and
+the test is incomplete without matching font-probe plumbing.
+
 ## Engine / MCP boundary
 
 `src/pptx_mcp_server/engine/*.py` MUST NOT import `mcp`. Library consumers

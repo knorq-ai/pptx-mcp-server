@@ -100,6 +100,31 @@ and is only required when launching the `pptx-mcp-server` CLI / importing
 `tests/test_library_usage.py` enforces that, and
 `tests/test_packaging_extras.py` enforces the packaging side of the split.
 
+### Supported scripts
+
+The auto-layout engine (`pptx_mcp_server.engine.text_metrics`) uses a
+heuristic width/height estimator. Only the scripts listed below are
+calibrated and covered by `tests/test_calibration.py`; anything else falls
+back to ASCII-normal width and may be silently under-estimated.
+
+| Script | Status | Accuracy / notes |
+|---|---|---|
+| ASCII / Latin-1 (Arial metric-compatible fonts) | Supported | ±10% for mixed-case strings, ±17% per-char |
+| CJK Unified Ideographs + Hiragana + Katakana (Yu Gothic / Meiryo / Hiragino Sans / Noto Sans CJK) | Supported | ±15% |
+| CJK Ext A/B/SIP/Compat Ideographs | Supported | Treated as full-em |
+| Half-width katakana (U+FF61–U+FF9F) | Supported | Mapped to ASCII-normal width |
+| Zero-width joiners, variation selectors, combining marks | Supported | 0-width |
+| Hangul (Korean) U+AC00–U+D7AF | **Unsupported** | Falls back to ASCII → heights ~2× under-estimated |
+| Arabic U+0600–U+06FF | **Unsupported** | ASCII fallback + RTL ignored |
+| Thai U+0E00–U+0E7F | **Unsupported** | No word-break logic + combining marks |
+| Devanagari U+0900–U+097F | **Unsupported** | Combining marks ignored |
+| Hebrew | **Unsupported** | RTL ignored |
+| Cyrillic | Approximate | ASCII-width fallback (practically acceptable) |
+
+Adding a new script involves extending `_CJK_RANGES` (or a new script set),
+calibrating a width constant, and adding sentinel characters to
+`tests/test_calibration.py`. See `CONTRIBUTING.md` → "Adding a new script".
+
 ## Tools
 
 ### Presentation

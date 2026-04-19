@@ -180,7 +180,8 @@ def test_single_card_fills_row_width(slide):
         gap=0.5, height_mode="max",
     )
 
-    # placement の width が 8.0 と一致 (CardSpec.width には書き戻さない仕様)
+    # placement の width が 8.0 と一致 (width は layout の出力であり、
+    # CardSpec には width フィールド自体が存在しない)
     assert placements[0].width == pytest.approx(8.0, abs=1e-4)
 
     # 先頭 shape = 背景矩形。width が 8.0 に一致
@@ -248,13 +249,15 @@ def test_consumed_height_matches_max_for_max_and_fill(slide, one_slide_prs):
 
 def test_cardspec_not_mutated_between_calls(slide, one_slide_prs):
     """同じ ``CardSpec`` リストを 2 つの ``add_responsive_card_row`` に渡しても
-    2 回目の widths が 1 回目と一致し (幅リーク無し)、``CardSpec.width`` は
-    既定値 (0.0) のまま変わらない (#26 Problem A)."""
+    2 回目の widths が 1 回目と一致し (幅リーク無し)、``CardSpec`` 自体が
+    書き換えられない (#26 Problem A)."""
     cards = [
         CardSpec(title="A", body="Short."),
         CardSpec(title="B", body="Short."),
         CardSpec(title="C", body="Short."),
     ]
+    # snapshot: CardSpec の全フィールド値を保存する
+    snapshots = [tuple(c.__dict__.items()) for c in cards]
 
     # 1 回目の呼び出し
     placements1, _ = add_responsive_card_row(
@@ -263,9 +266,9 @@ def test_cardspec_not_mutated_between_calls(slide, one_slide_prs):
         gap=0.2, height_mode="max",
     )
     widths1 = [p.width for p in placements1]
-    # 入力 CardSpec は mutation されない
-    for c in cards:
-        assert c.width == 0.0
+    # 入力 CardSpec は mutation されない (全フィールドが初期値のまま)
+    for c, snap in zip(cards, snapshots):
+        assert tuple(c.__dict__.items()) == snap
 
     # 同じリストで 2 枚目のスライドにもう 1 回レイアウト
     layout = one_slide_prs.slide_layouts[6]
@@ -281,8 +284,8 @@ def test_cardspec_not_mutated_between_calls(slide, one_slide_prs):
     # 幅は一致
     assert widths1 == pytest.approx(widths2, abs=1e-6)
     # 入力 CardSpec はまだ変わっていない
-    for c in cards:
-        assert c.width == 0.0
+    for c, snap in zip(cards, snapshots):
+        assert tuple(c.__dict__.items()) == snap
 
 
 def test_unknown_height_mode_raises(slide):

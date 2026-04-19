@@ -19,6 +19,31 @@
 いる点に注意すること。将来のフォント別較正テーブル導入時に意味を持たせる
 余地を残すため引数シグネチャに残してある。
 
+## サポート対象スクリプト (Supported — 較正＋テストあり)
+
+- ASCII / Latin-1 (Arial metric-compatible フォント): 混在文字列 ±10%
+- CJK 統合漢字 + ひらがな + カタカナ (Yu Gothic / Meiryo / Hiragino Sans /
+  Noto Sans CJK): ±15%
+- CJK Ext A/B/SIP/Compat Ideographs (全て全角扱い)
+- 半角カタカナ (U+FF61–U+FF9F): ASCII normal 幅にマップ
+- ゼロ幅ジョイナー・異体字セレクタ・結合マーク: 0 幅扱い
+
+## サポート外スクリプト (Unsupported — ASCII normal fallback)
+
+以下のスクリプトは :data:`_CJK_RANGES` に含まれず、ASCII normal 幅への
+fallback 経路を通る。幅推定は大きく外れ、レイアウトがサイレントに
+clip/wrap する可能性が高い:
+
+- ハングル (韓国語) U+AC00–U+D7AF: 高さが約 2 倍過小評価される
+- アラビア語 U+0600–U+06FF: RTL も無視される
+- タイ語 U+0E00–U+0E7F: 結合マーク・word-break ロジック非対応
+- デーヴァナーガリー U+0900–U+097F: 結合マーク非対応
+- ヘブライ語: RTL 無視で大幅にずれる
+- キリル文字: ASCII 近似 (実用上は概ね許容範囲)
+
+新規スクリプト対応の追加手順は ``CONTRIBUTING.md`` の
+「Adding a new script」節を参照すること。
+
 # 既知の制限
 - カーニングやヒンティングは考慮しない。
 - フォントファミリ差は現時点で無視する (引数は将来拡張のため保持)。
@@ -59,10 +84,6 @@ _ASCII_NORMAL_WIDTH_PER_PT: float = 0.00765
 # ASCII wide 文字幅 (大文字多数 + M/W/m/@ 等)
 # 範囲: 0.01003 ≤ w ≤ 0.01410, repr=0.01172, worst 16.9%
 _ASCII_WIDE_WIDTH_PER_PT: float = 0.01172
-
-# Legacy alias: 旧 `_ASCII_WIDTH_PER_PT` を import している外部コード向け。
-# 新コードでは `_ASCII_NORMAL_WIDTH_PER_PT` を参照すること。
-_ASCII_WIDTH_PER_PT: float = _ASCII_NORMAL_WIDTH_PER_PT
 
 # Very narrow バケット: advance width ≤ ~0.00361"/pt の ASCII printable 文字
 _ASCII_VERY_NARROW_CHARS: frozenset[str] = frozenset("'ijl|")
@@ -205,6 +226,12 @@ def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float
         Estimated width in inches. Accuracy: ±17% per-char / ±10% for
         mixed-case strings on Arial Latin, ±15% for CJK with Japanese system
         fonts (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial.
+
+    Fallback:
+        サポート外のスクリプト (ハングル・アラビア語・タイ語・デーヴァナーガリー・
+        ヘブライ語など) は ASCII normal 幅に fallback する。実描画幅とは
+        大きくずれる可能性があり、ハングルは高さが約 2 倍過小評価される。
+        詳細は本モジュール docstring の「Supported/Unsupported」節を参照。
     """
     if not char:
         return 0.0
@@ -242,6 +269,11 @@ def estimate_text_width(
         (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. The
         ``font`` argument is currently an advisory label — width constants
         are calibrated for Arial only.
+
+    Fallback:
+        サポート外のスクリプト (ハングル・アラビア語・タイ語・デーヴァナーガリー・
+        ヘブライ語など) を含む文字列は、その文字について ASCII normal 幅に
+        fallback する。実描画幅とは大きくずれる可能性がある。
     """
     if not text:
         return 0.0
@@ -280,6 +312,12 @@ def wrap_text(
         Japanese system fonts (Yu Gothic/Meiryo), worse for italic/condensed/
         non-Arial. Border cases may produce one extra or one fewer line than
         PowerPoint's own layout.
+
+    Fallback:
+        サポート外のスクリプト (ハングル・アラビア語・タイ語・デーヴァナーガリー
+        など) は ASCII normal 幅に fallback するため折り返し位置は実描画と
+        ずれる。特にタイ語には word-break ロジックが存在せず、アラビア語・
+        ヘブライ語は RTL 処理を行わないので wrap 結果は不正確になる。
     """
     if not text:
         return []
@@ -427,6 +465,12 @@ def estimate_text_height(
         (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. The
         ``line_height_factor`` default of 1.2 matches PowerPoint's "single
         spacing"; adjust explicitly for tighter/looser leading.
+
+    Fallback:
+        サポート外のスクリプト (ハングル・アラビア語・タイ語・デーヴァナーガリー
+        など) は ASCII normal 幅に fallback するため行数推定が実描画と
+        ずれ、結果として高さが過小評価されがちである。ハングルは約 2 倍
+        過小評価され、レイアウトがクリップする可能性が高い。
     """
     if not text:
         return 0.0
