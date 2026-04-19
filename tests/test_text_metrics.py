@@ -12,6 +12,8 @@ from pptx_mcp_server.engine.text_metrics import (
     estimate_text_height,
     estimate_text_width,
     is_cjk,
+    is_half_width_kana,
+    is_zero_width,
     wrap_text,
 )
 
@@ -45,6 +47,87 @@ class TestIsCjk:
 
     def test_empty_is_not_cjk(self) -> None:
         assert is_cjk("") is False
+
+    def test_cjk_ext_a(self) -> None:
+        # 人名漢字など CJK Ext A (U+3400–U+4DBF)
+        assert is_cjk("㐂") is True
+
+    def test_cjk_sip_plane2(self) -> None:
+        # SIP (U+20000–U+2FFFF) の 1 コードポイント
+        assert is_cjk(chr(0x2000B)) is True  # 𠀋
+
+    def test_cjk_compat_ideographs(self) -> None:
+        # CJK Compatibility Ideographs (U+F900–U+FAFF)
+        assert is_cjk(chr(0xF900)) is True
+
+    def test_cjk_radicals(self) -> None:
+        # CJK Radicals Supplement / Kangxi Radicals
+        assert is_cjk(chr(0x2E80)) is True
+        assert is_cjk(chr(0x2F00)) is True
+
+    def test_half_width_kana_is_cjk(self) -> None:
+        # 半角カタカナも CJK スクリプト扱い (幅は ASCII 相当だが判定は True)
+        assert is_cjk("ｶ") is True
+
+    def test_zwsp_is_not_cjk(self) -> None:
+        assert is_cjk("\u200B") is False
+
+
+class TestIsHalfWidthKana:
+    """is_half_width_kana の判定."""
+
+    def test_half_width_kana(self) -> None:
+        assert is_half_width_kana("ｶ") is True
+        assert is_half_width_kana("ﾀ") is True
+        assert is_half_width_kana("ﾅ") is True
+
+    def test_full_width_kana_is_not_half(self) -> None:
+        assert is_half_width_kana("カ") is False
+        assert is_half_width_kana("ア") is False
+
+    def test_ascii_is_not_half_width_kana(self) -> None:
+        assert is_half_width_kana("a") is False
+        assert is_half_width_kana("1") is False
+
+    def test_empty_string(self) -> None:
+        assert is_half_width_kana("") is False
+
+
+class TestIsZeroWidth:
+    """is_zero_width の判定."""
+
+    def test_zwsp(self) -> None:
+        assert is_zero_width("\u200B") is True
+
+    def test_zwnj_zwj(self) -> None:
+        assert is_zero_width("\u200C") is True
+        assert is_zero_width("\u200D") is True
+
+    def test_word_joiner(self) -> None:
+        assert is_zero_width("\u2060") is True
+
+    def test_bom_zwnbsp(self) -> None:
+        assert is_zero_width("\uFEFF") is True
+
+    def test_variation_selector(self) -> None:
+        assert is_zero_width("\uFE00") is True
+        assert is_zero_width("\uFE0F") is True
+
+    def test_combining_mark(self) -> None:
+        # 結合濁点 (U+3099) は unicodedata.combining != 0 のため 0 幅扱い。
+        # なお U+309B は spacing voiced sound mark で combining ではない。
+        assert is_zero_width("\u3099") is True
+        # 他の結合マーク例: COMBINING ACUTE ACCENT
+        assert is_zero_width("\u0301") is True
+
+    def test_ascii_is_not_zero_width(self) -> None:
+        assert is_zero_width("a") is False
+
+    def test_cjk_is_not_zero_width(self) -> None:
+        assert is_zero_width("あ") is False
+
+    def test_empty_string(self) -> None:
+        assert is_zero_width("") is False
 
 
 class TestEstimateTextWidth:
@@ -100,6 +183,69 @@ class TestEstimateCharWidth:
 
     def test_empty_char_zero(self) -> None:
         assert estimate_char_width("", 10) == 0.0
+
+    def test_half_width_kana_is_ascii_width(self) -> None:
+        # 半角カタカナは CJK 全角ではなく ASCII 相当の幅を使う。
+        assert estimate_char_width("ｶ", 10) == pytest.approx(
+            estimate_char_width("a", 10), abs=0.0001
+        )
+
+    def test_full_width_kana_is_em_width(self) -> None:
+        # 全角カタカナは 1em 幅 (0.0139"/pt)
+        assert estimate_char_width("カ", 10) == pytest.approx(10 * 0.0139, abs=0.0001)
+
+    def test_half_width_kana_half_of_full(self) -> None:
+        # 半角は全角のおおよそ半分 (ASCII 0.0083 vs CJK 0.0139)
+        assert estimate_char_width("ｶ", 10) < estimate_char_width("カ", 10)
+
+    def test_zero_width_space(self) -> None:
+        assert estimate_char_width("\u200B", 10) == 0.0
+
+    def test_variation_selector(self) -> None:
+        assert estimate_char_width("\uFE0F", 10) == 0.0
+
+    def test_combining_mark_zero_width(self) -> None:
+        # U+3099 は結合濁点 → 0 幅
+        assert estimate_char_width("\u3099", 10) == 0.0
+
+    def test_cjk_ext_a_is_em_width(self) -> None:
+        # 人名漢字 U+3400–U+4DBF も 1em 扱い (従来は ASCII 扱いで過小評価)
+        assert estimate_char_width("㐂", 10) == pytest.approx(10 * 0.0139, abs=0.0001)
+
+    def test_sip_is_em_width(self) -> None:
+        # SIP 面のコードポイントも 1em 扱い
+        assert estimate_char_width(chr(0x2000B), 10) == pytest.approx(
+            10 * 0.0139, abs=0.0001
+        )
+
+
+class TestEstimateTextWidthExtended:
+    """is_cjk 拡張後の幅推定検証."""
+
+    def test_combining_mark_adds_no_width(self) -> None:
+        # "か" + 結合濁点 の幅は "か" 単独と同じ
+        with_combining = estimate_text_width("か\u3099", 10)
+        without = estimate_text_width("か", 10)
+        assert with_combining == pytest.approx(without, abs=0.0001)
+
+    def test_cjk_ext_a_triple(self) -> None:
+        # 実プロダクションの日本人氏名ケース: "㐂㐂㐂" は 3 × CJK 幅。
+        # 旧実装では ASCII 扱いで 3 × 0.0083 と過小評価されていた。
+        width = estimate_text_width("㐂㐂㐂", 10)
+        expected = 3 * 10 * 0.0139
+        assert width == pytest.approx(expected, abs=0.001)
+
+    def test_half_width_kana_string(self) -> None:
+        # ｶﾀｶﾅ = 4 × ASCII 幅 (旧実装では 4 × CJK 幅で過大評価されていた)
+        width = estimate_text_width("ｶﾀｶﾅ", 10)
+        expected = 4 * 10 * 0.0083
+        assert width == pytest.approx(expected, abs=0.001)
+
+    def test_zwsp_does_not_add_width(self) -> None:
+        # ZWSP を含む文字列は含まないものと同じ幅
+        assert estimate_text_width("ab\u200Bcd", 10) == pytest.approx(
+            estimate_text_width("abcd", 10), abs=0.0001
+        )
 
 
 class TestWrapText:
