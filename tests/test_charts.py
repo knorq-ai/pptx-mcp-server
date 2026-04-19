@@ -476,7 +476,9 @@ class TestBuildSlideChart:
         assert "Unknown element type" in str(exc_info.value)
 
     def test_build_slide_file_with_chart(self, pptx_file):
-        spec = json.dumps({
+        # v0.3.1 (#105): build_slide no longer accepts JSON strings — pass
+        # the structured dict directly.
+        spec = {
             "layout": "content",
             "title": "Revenue Breakdown",
             "elements": [
@@ -495,7 +497,7 @@ class TestBuildSlideChart:
                     "legend_position": "bottom",
                 }
             ],
-        })
+        }
         result = build_slide(pptx_file, spec)
         assert "Built slide" in result
         assert "1 elements" in result
