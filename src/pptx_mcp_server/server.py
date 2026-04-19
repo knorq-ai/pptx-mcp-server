@@ -18,6 +18,7 @@ from .engine import (
     duplicate_slide,
     set_slide_background,
     add_textbox,
+    add_auto_fit_textbox_file,
     add_shape,
     add_image,
     edit_text,
@@ -349,6 +350,42 @@ def pptx_add_textbox(
             font_name, font_size, font_color, bold, italic,
             alignment, vertical_anchor, word_wrap, line_spacing, underline,
         )
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_auto_fit_textbox(
+    file_path: str,
+    slide_index: int,
+    text: str,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    font_name: str = "Arial",
+    font_size_pt: float = 11,
+    min_size_pt: float = 7,
+    bold: bool = False,
+    color_hex: str = "333333",
+    align: str = "left",
+    vertical_anchor: str = "top",
+    truncate_with_ellipsis: bool = True,
+) -> str:
+    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. Returns a JSON object with shape_index, shape_name, and actual_font_size."""
+    try:
+        result = add_auto_fit_textbox_file(
+            file_path, slide_index, text, left, top, width, height,
+            font_name=font_name,
+            font_size_pt=font_size_pt,
+            min_size_pt=min_size_pt,
+            bold=bold,
+            color_hex=color_hex,
+            align=align,
+            vertical_anchor=vertical_anchor,
+            truncate_with_ellipsis=truncate_with_ellipsis,
+        )
+        return json.dumps(result)
     except Exception as e:
         return _err(e)
 

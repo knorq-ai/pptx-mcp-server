@@ -14,6 +14,7 @@ from .pptx_io import (
     EngineError, ErrorCode,
     open_pptx, save_pptx, _get_slide, _get_shape, _parse_color,
 )
+from .text_metrics import estimate_text_height, estimate_text_width, wrap_text
 
 from ..theme import Theme, resolve_color
 
@@ -469,3 +470,230 @@ def list_shapes(file_path, slide_index):
     prs = open_pptx(file_path)
     slide = _get_slide(prs, slide_index)
     return _list_shapes(slide, slide_index)
+
+
+# ── Auto-fit textbox ────────────────────────────────────────────
+
+# 内側 padding (inches)。左右に同量の padding を見込むため、usable width は
+# width - 2 * _AUTO_FIT_PADDING となる。
+_AUTO_FIT_PADDING: float = 0.05
+
+# font size 縮小ステップ (pt)
+_AUTO_FIT_STEP_PT: float = 0.5
+
+# 高さ推定に使う行高倍率
+_AUTO_FIT_LINE_HEIGHT: float = 1.2
+
+# 省略記号
+_ELLIPSIS: str = "\u2026"
+
+
+def _fit_font_size(
+    text: str,
+    usable_width: float,
+    height: float,
+    font_name: str,
+    font_size_pt: float,
+    min_size_pt: float,
+) -> tuple[float, bool]:
+    """指定 box に収まる font size を二分探索ではなく 0.5pt ステップで決定する.
+
+    Returns:
+        (size, fits): ``size`` は採用する font size。``fits`` は最終的にその
+        size で text が box 内に収まるかどうか (min に達してもなおオーバー
+        フローする場合は False)。
+    """
+    size = float(font_size_pt)
+    min_size = float(min_size_pt)
+    while size > min_size:
+        height_est = estimate_text_height(
+            text, usable_width, size, font_name,
+            line_height_factor=_AUTO_FIT_LINE_HEIGHT,
+        )
+        if height_est <= height:
+            return size, True
+        size = round(size - _AUTO_FIT_STEP_PT, 2)
+    # min_size でチェック
+    height_est = estimate_text_height(
+        text, usable_width, min_size, font_name,
+        line_height_factor=_AUTO_FIT_LINE_HEIGHT,
+    )
+    return min_size, height_est <= height
+
+
+def _truncate_to_fit(
+    text: str,
+    usable_width: float,
+    height: float,
+    font_name: str,
+    size_pt: float,
+) -> str:
+    """``size_pt`` の size で ``(usable_width, height)`` に収まるよう末尾を
+    省略記号で切り詰める.
+
+    方針:
+    - まず wrap_text で折り返し結果を得る。
+    - 高さが許す行数 ``max_lines`` を算出する。
+    - 最終行は末尾から 1 文字ずつ削りながら ``line + 省略記号`` の幅が
+      ``usable_width`` 以下になるまで縮める。
+    - ``max_lines == 0`` の場合は空文字列を返す。
+    """
+    line_h = size_pt * 0.0139 * _AUTO_FIT_LINE_HEIGHT
+    if line_h <= 0:
+        return text
+    max_lines = int(height // line_h)
+    if max_lines <= 0:
+        return ""
+
+    lines = wrap_text(text, usable_width, size_pt, font_name)
+    if not lines:
+        return ""
+
+    if len(lines) <= max_lines:
+        # 高さには収まるが、幅の再確認は wrap で保証済み。そのまま返す。
+        return "\n".join(lines)
+
+    retained = lines[:max_lines]
+    last = retained[-1]
+    # last + ellipsis が usable_width を超える間、末尾から 1 文字ずつ削る。
+    while last and estimate_text_width(last + _ELLIPSIS, size_pt, font_name) > usable_width:
+        last = last[:-1]
+    retained[-1] = (last + _ELLIPSIS) if last else _ELLIPSIS
+    return "\n".join(retained)
+
+
+def add_auto_fit_textbox(
+    slide,
+    text: str,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    *,
+    font_name: str = "Arial",
+    font_size_pt: float = 11,
+    min_size_pt: float = 7,
+    bold: bool = False,
+    color_hex: str = "333333",
+    align: str = "left",
+    vertical_anchor: str = "top",
+    truncate_with_ellipsis: bool = True,
+) -> tuple[object, float]:
+    """指定 box に収まる最大 font size でテキストを描画する.
+
+    動作:
+        (a) 内側 padding 0.05" を左右に見込んで usable width を計算する。
+        (b) ``font_size_pt`` から開始し、``estimate_text_height(wrapped)`` が
+            ``height`` 以下になるまで 0.5pt 刻みで縮小する。
+        (c) ``min_size_pt`` に達しても収まらない場合、
+            ``truncate_with_ellipsis=True`` なら末尾を省略記号で切り詰めて
+            描画する。False なら full text をそのまま描画しオーバーフロー
+            を許容する。
+        (d) 決定した font size で ``_add_textbox`` 経由で textframe を生成し、
+            ``vertical_anchor`` に応じて ``MSO_ANCHOR`` を設定する。
+
+    Args:
+        slide: 対象スライドオブジェクト。
+        text: 描画するテキスト。
+        left, top, width, height: 位置と寸法 (inches)。
+        font_name: フォント名。デフォルトは ``"Arial"``。
+        font_size_pt: 開始 font size (pt)。
+        min_size_pt: 縮小の下限 (pt)。
+        bold: 太字にするかどうか。
+        color_hex: 文字色 (hex、``#`` なし)。
+        align: 水平方向の揃え ``"left" | "center" | "right"``。
+        vertical_anchor: 垂直方向の揃え ``"top" | "middle" | "bottom"``。
+        truncate_with_ellipsis: min size でも収まらない場合に末尾を
+            省略記号で切り詰めるかどうか。
+
+    Returns:
+        ``(shape, actual_font_size)`` のタプル。テスト・デバッグ用途。
+    """
+    usable_width = max(width - 2 * _AUTO_FIT_PADDING, 0.01)
+
+    actual_size, fits = _fit_font_size(
+        text, usable_width, height, font_name, font_size_pt, min_size_pt,
+    )
+
+    rendered_text = text
+    if not fits and truncate_with_ellipsis:
+        rendered_text = _truncate_to_fit(
+            text, usable_width, height, font_name, actual_size,
+        )
+
+    idx = _add_textbox(
+        slide,
+        left, top, width, height,
+        text=rendered_text,
+        font_name=font_name,
+        font_size=actual_size,
+        font_color=color_hex,
+        bold=bold if bold else None,
+        italic=None,
+        alignment=align,
+        vertical_anchor=vertical_anchor,
+        word_wrap=True,
+        line_spacing=None,
+        underline=None,
+    )
+
+    shape = slide.shapes[idx]
+    tf = shape.text_frame
+    tf.word_wrap = True
+    # auto_size は手動でサイズ決定済みなので明示的に None にする。
+    tf.auto_size = None
+    if vertical_anchor in _ANCHOR_MAP:
+        tf.vertical_anchor = _ANCHOR_MAP[vertical_anchor]
+
+    return shape, actual_size
+
+
+def add_auto_fit_textbox_file(
+    file_path: str,
+    slide_index: int,
+    text: str,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    font_name: str = "Arial",
+    font_size_pt: float = 11,
+    min_size_pt: float = 7,
+    bold: bool = False,
+    color_hex: str = "333333",
+    align: str = "left",
+    vertical_anchor: str = "top",
+    truncate_with_ellipsis: bool = True,
+) -> dict:
+    """File-based wrapper: 指定 box に収まるよう自動縮小する textbox を追加する.
+
+    Returns:
+        ``{"shape_index": int, "slide_index": int, "actual_font_size": float}``
+        を含む dict。MCP ツール経由で呼び出される想定。
+    """
+    prs = open_pptx(file_path)
+    slide = _get_slide(prs, slide_index)
+    shape, actual_size = add_auto_fit_textbox(
+        slide, text, left, top, width, height,
+        font_name=font_name,
+        font_size_pt=font_size_pt,
+        min_size_pt=min_size_pt,
+        bold=bold,
+        color_hex=color_hex,
+        align=align,
+        vertical_anchor=vertical_anchor,
+        truncate_with_ellipsis=truncate_with_ellipsis,
+    )
+    # shape_index を決定 (slide 内で shape を線形検索)
+    shape_index = -1
+    for i, s in enumerate(slide.shapes):
+        if s is shape:
+            shape_index = i
+            break
+    save_pptx(prs, file_path)
+    return {
+        "slide_index": slide_index,
+        "shape_index": shape_index,
+        "shape_name": shape.name,
+        "actual_font_size": actual_size,
+    }

@@ -23,6 +23,8 @@ from .shapes import (
     add_paragraph,
     delete_shape,
     list_shapes,
+    add_auto_fit_textbox,
+    add_auto_fit_textbox_file,
     _add_textbox,
     _add_shape,
     _add_image,
@@ -94,6 +96,7 @@ __all__ = [
     # Shapes
     "add_textbox", "add_shape", "add_image", "edit_text", "add_paragraph",
     "delete_shape", "list_shapes",
+    "add_auto_fit_textbox", "add_auto_fit_textbox_file",
     # Tables
     "add_table", "edit_table_cell", "edit_table_cells", "format_table",
     # Formatting
