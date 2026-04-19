@@ -125,6 +125,64 @@ Adding a new script involves extending `_CJK_RANGES` (or a new script set),
 calibrating a width constant, and adding sentinel characters to
 `tests/test_calibration.py`. See `CONTRIBUTING.md` → "Adding a new script".
 
+## Response Shape (v0.2.0+)
+
+> **BREAKING CHANGE (v0.2.0).** All MCP tool responses are now JSON-encoded and
+> wrapped in a `{ok, result | error}` envelope.  Previously tools returned raw
+> human-readable strings (success) and bracket-prefixed errors like
+> `"[INVALID_PARAMETER] ..."`.  Consumers must `json.loads()` the response and
+> branch on the `ok` field.  See issue #88.
+
+Success:
+
+```json
+{"ok": true, "result": "Added content slide [1]: Revenue Analysis"}
+```
+
+Error:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "parameter": "items_json",
+    "message": "items_json must be a JSON string, not a raw Python list.",
+    "hint": "Pass a JSON-stringified array, e.g., '[{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}]'.",
+    "issue": 35
+  }
+}
+```
+
+Error `code` values mirror `EngineError.code`: `INVALID_PARAMETER`,
+`FILE_NOT_FOUND`, `SLIDE_NOT_FOUND`, `SHAPE_NOT_FOUND`, `INDEX_OUT_OF_RANGE`,
+`INVALID_PPTX`, `TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`.  The
+`parameter`, `hint`, and `issue` fields are optional.
+
+## Auto-Render (opt-in; v0.2.0+)
+
+> **BREAKING CHANGE (v0.2.0).** Composite tools
+> (`pptx_add_content_slide`, `pptx_build_slide`, `pptx_build_deck`,
+> `pptx_add_kpi_row`, `pptx_add_bullet_block`, `pptx_add_section_divider`,
+> `pptx_add_responsive_card_row`, `pptx_add_connector`, `pptx_add_callout`,
+> `pptx_add_chart`, `pptx_add_icon`) previously forked LibreOffice to render
+> a PNG preview after every successful edit (~1.5s, no timeout, no off-switch).
+> Auto-render is now **OFF** by default.  See issue #86.
+
+Enable auto-render via environment variable:
+
+```bash
+export PPTX_MCP_AUTO_RENDER=1           # enable
+export PPTX_MCP_RENDER_TIMEOUT=10        # seconds (default 10)
+```
+
+When enabled, the successful result payload becomes
+`{"value": "<legacy string>", "preview_path": "/path/to/slide-01.png"}`.  If
+the render times out or fails, the primary action still succeeds and the
+result payload carries a `render_warning` field instead of a `preview_path`.
+For explicit, synchronous rendering use `pptx_render_slide` directly — that
+tool is unaffected by this gate.
+
 ## Tools
 
 ### Presentation

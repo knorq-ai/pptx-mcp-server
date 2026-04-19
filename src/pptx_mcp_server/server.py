@@ -9,11 +9,42 @@ Parameter conventions (new tools):
   ``min_size_pt``)。旧 tool の素の ``font_size`` は後方互換のため温存する。
 - ``colors``: ``"#"`` を含まない 6 桁 hex (例: ``"2251FF"``)。
 - coordinates: inches (float)。
+
+Response shape (v0.2.0; BREAKING change — see issue #88):
+
+All tool calls return a JSON string. Success payloads are wrapped as::
+
+    {"ok": true, "result": <legacy return value>}
+
+Error payloads are structured as::
+
+    {"ok": false, "error": {
+        "code": "INVALID_PARAMETER",
+        "parameter": "items_json",   // optional
+        "message": "...",
+        "hint": "...",                // optional
+        "issue": 35                    // optional GitHub issue reference
+    }}
+
+Consumers should ``json.loads`` the response and branch on the ``ok`` field.
+The ``error.code`` field mirrors ``EngineError.code`` enum values
+(``INVALID_PARAMETER``, ``FILE_NOT_FOUND``, ``SLIDE_NOT_FOUND``, etc.).
+
+Auto-render (v0.2.0; BREAKING change — see issue #86):
+
+Composite / batch-build tools previously invoked LibreOffice for a PNG preview
+after every successful edit. This is now **opt-in** via the
+``PPTX_MCP_AUTO_RENDER=1`` environment variable, with a hard timeout controlled
+by ``PPTX_MCP_RENDER_TIMEOUT`` (default 10 seconds). If rendering times out
+or fails, the primary tool still succeeds — the render outcome is surfaced as
+a ``render_warning`` field in the result payload.
 """
 
+import concurrent.futures
 import json
+import os
 from dataclasses import fields
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -71,28 +102,53 @@ from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 INSTRUCTIONS = """
 # pptx-editor — Professional Presentation Builder
 
-## IMPORTANT: Before Building Any Deck
-**Always ask the user which color palette to use before creating slides.** Present these options:
-1. **McKinsey** (default) — Dark navy `#051C2C` + Bright blue `#2251FF`. Professional, authoritative.
-2. **Deloitte** — Navy `#002776` + Green `#81BC00`. Corporate, multi-color palette with blues and greens.
-3. **Neutral** — Dark gray `#333333` + Soft blue `#4A90D9`. Clean, universally safe.
-4. **Custom** — Ask the user for their brand primary color (hex) and accent color (hex). You can pass these as overrides.
-
-Once chosen, pass `"theme": "mckinsey"` (or `"deloitte"` / `"neutral"`) in every slide spec.
+This MCP server is a neutral capability provider. It exposes tools for
+building PowerPoint decks. It does not prescribe user-facing UX (whether
+to prompt the caller for a theme, when to confirm with a user, etc.) —
+that belongs in the agent's system prompt or the calling application.
 
 ## Quick Start
-1. Ask user for color palette preference (see above)
-2. `pptx_create` — create a new 16:9 PPTX file
-3. `pptx_build_deck` — build an ENTIRE deck from a JSON spec (most efficient)
-4. `pptx_render_slide` — render to PNG for visual verification
+1. `pptx_create` — create a new 16:9 PPTX file
+2. `pptx_build_deck` — build an ENTIRE deck from a JSON spec (most efficient)
+3. `pptx_render_slide` — render to PNG for visual verification (optional,
+   requires LibreOffice)
 
 ## Recommended Workflow
-- **Always ask for color palette first** before building any new deck
-- Use `pptx_build_deck` for new decks (1 call = all slides, 1 file I/O)
-- Use `pptx_build_slide` to add individual slides
-- Use `pptx_render_slide` to verify visually (returns PNG path — read with Read tool)
-- Use `pptx_check_layout` after building to detect overlaps before delivery
-- Use primitive tools (`pptx_edit_text`, `pptx_format_shape`) for fine-grained edits
+- Use `pptx_build_deck` for new decks (1 call = all slides, 1 file I/O).
+- Use `pptx_build_slide` to add individual slides.
+- Use `pptx_render_slide` explicitly to verify visually (returns PNG path
+  — read with Read tool). Composite tools do NOT auto-render by default.
+- Use `pptx_check_layout` after building to detect overlaps before delivery.
+- Use primitive tools (`pptx_edit_text`, `pptx_format_shape`) for fine-grained
+  edits.
+
+## Response Shape (v0.2.0+)
+All tools return a JSON string. Parse with `json.loads`:
+
+- Success: `{"ok": true, "result": ...}`
+- Error:   `{"ok": false, "error": {"code": "INVALID_PARAMETER",
+            "parameter": "items_json", "message": "...", "hint": "..."}}`
+
+Error codes mirror `EngineError.code`: `INVALID_PARAMETER`, `FILE_NOT_FOUND`,
+`SLIDE_NOT_FOUND`, `SHAPE_NOT_FOUND`, `INDEX_OUT_OF_RANGE`, `INVALID_PPTX`,
+`TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`.
+
+## Auto-Render (opt-in; off by default)
+Composite tools (`pptx_add_content_slide`, `pptx_build_slide`, etc.) can
+auto-render a PNG preview after each successful edit. This forks LibreOffice
+and adds ~1.5s per call, so it is **OFF** by default. Enable via the
+`PPTX_MCP_AUTO_RENDER=1` environment variable. Timeout is controlled by
+`PPTX_MCP_RENDER_TIMEOUT` (default 10 seconds). If rendering times out or
+fails, the primary tool still succeeds — the failure is reported in the
+result's `render_warning` field. For explicit rendering, use
+`pptx_render_slide` directly.
+
+## Available Themes
+Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
+Available: `mckinsey` (default), `deloitte`, `neutral`. Custom palettes are
+supported by passing explicit `primary_color` / `accent_color` hex values on
+individual elements (e.g., `font_color`, `fill_color`) instead of a named
+theme.
 
 ## McKinsey-Style Layout Rules
 - **Slide dimensions**: 16:9 widescreen (13.333" x 7.5")
@@ -103,7 +159,7 @@ Once chosen, pass `"theme": "mckinsey"` (or `"deloitte"` / `"neutral"`) in every
 - **Footer zone**: 6.65" (source line + page number)
 - **Font**: Arial for everything (sans-serif works best with Japanese)
 
-## Color Palette (McKinsey-inspired)
+## Color Palette (McKinsey-inspired, for reference)
 - Primary text: `051C2C` (dark navy)
 - Accent/highlight: `2251FF` (bright blue)
 - Secondary text: `666666`
@@ -215,9 +271,6 @@ Annotation textbox + arrow pointing to target. Auto-places label if label_x/labe
  "font_color": "negative", "bg_color": "F5F5F5", "arrow_end": "stealth"}
 ```
 
-## Themes
-Set per-slide via `"theme": "mckinsey"` in spec. Available: mckinsey (default), deloitte, neutral.
-
 ## Rendering (Optional)
 `pptx_render_slide` requires LibreOffice. Install:
 - macOS: `brew install --cask libreoffice`
@@ -228,21 +281,148 @@ Set per-slide via `"theme": "mckinsey"` in spec. Available: mckinsey (default), 
 mcp = FastMCP("pptx-editor", instructions=INSTRUCTIONS)
 
 
-def _auto_render(file_path: str, slide_index: int) -> str:
-    """Try to render a slide preview. Returns preview info or empty string if unavailable."""
-    try:
-        png = render_slide(file_path, slide_index=slide_index, dpi=100)
-        # render_slide may return multiple lines; take the last one (target slide)
-        lines = png.strip().split("\n")
-        return f"\n📸 Preview: {lines[-1]} (open with Read tool to verify visually)"
-    except Exception:
-        return ""
+# ── Structured response helpers (issue #88) ────────────────────────────
+
+def _success(result: Any) -> str:
+    """Wrap a successful tool result in ``{"ok": true, "result": ...}``.
+
+    ``result`` は legacy tool の戻り値 (通常は human-readable string) を
+    そのまま格納する。JSON で表現できない object は呼び出し側で事前に
+    serialize すること。
+    """
+    return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
+
+
+def _error(
+    code: str,
+    message: str,
+    *,
+    parameter: Optional[str] = None,
+    hint: Optional[str] = None,
+    issue: Optional[int] = None,
+) -> str:
+    """Build a structured error payload and return JSON-string.
+
+    Shape::
+
+        {"ok": false, "error": {"code": <str>, "message": <str>,
+         "parameter": <optional str>, "hint": <optional str>,
+         "issue": <optional int>}}
+    """
+    err: Dict[str, Any] = {"code": code, "message": message}
+    if parameter is not None:
+        err["parameter"] = parameter
+    if hint is not None:
+        err["hint"] = hint
+    if issue is not None:
+        err["issue"] = issue
+    return json.dumps({"ok": False, "error": err}, ensure_ascii=False)
 
 
 def _err(e: Exception) -> str:
+    """Translate an exception into a structured error JSON string.
+
+    ``EngineError`` は ``code`` enum をそのまま error.code として流用する。
+    それ以外は ``INTERNAL_ERROR`` に fall back する。
+    """
     if isinstance(e, EngineError):
-        return f"[{e.code.value}] {e}"
-    return f"[INTERNAL_ERROR] {e}"
+        return _error(e.code.value, str(e))
+    return _error("INTERNAL_ERROR", f"{type(e).__name__}: {e}")
+
+
+# ── Auto-render gate (issue #86) ───────────────────────────────────────
+
+_DEFAULT_RENDER_TIMEOUT_S = 10.0
+
+
+def _auto_render_enabled() -> bool:
+    """``PPTX_MCP_AUTO_RENDER`` が truthy なら auto-render を実行する."""
+    v = os.environ.get("PPTX_MCP_AUTO_RENDER", "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
+def _auto_render_timeout() -> float:
+    """``PPTX_MCP_RENDER_TIMEOUT`` (秒) を float で返す. 既定 10 秒."""
+    raw = os.environ.get("PPTX_MCP_RENDER_TIMEOUT", "").strip()
+    if not raw:
+        return _DEFAULT_RENDER_TIMEOUT_S
+    try:
+        v = float(raw)
+        if v <= 0:
+            return _DEFAULT_RENDER_TIMEOUT_S
+        return v
+    except ValueError:
+        return _DEFAULT_RENDER_TIMEOUT_S
+
+
+def _auto_render(file_path: str, slide_index: int) -> Dict[str, Any]:
+    """Render a slide preview if enabled; else return a neutral "skipped" payload.
+
+    Always returns a dict — never raises, never fails the caller. Shape::
+
+        {"rendered": false, "reason": "disabled"}                       # off
+        {"rendered": true, "preview_path": "/.../slide-01.png"}         # ok
+        {"rendered": false, "reason": "timeout", "timeout_s": 10.0}     # slow
+        {"rendered": false, "reason": "failed", "error": "<msg>"}       # crash
+
+    Opt-in via ``PPTX_MCP_AUTO_RENDER=1``. Timeout via
+    ``PPTX_MCP_RENDER_TIMEOUT`` (default 10s). The caller should only invoke
+    this AFTER the primary action has succeeded.
+    """
+    if not _auto_render_enabled():
+        return {"rendered": False, "reason": "disabled"}
+
+    timeout = _auto_render_timeout()
+
+    def _do_render() -> str:
+        return render_slide(file_path, slide_index=slide_index, dpi=100)
+
+    # ThreadPoolExecutor で走らせ future.result(timeout) で上限を掛ける。
+    # `with` block を使うと __exit__ で shutdown(wait=True) が呼ばれ、
+    # 裏の slow スレッドが終わるまでブロックするため timeout が機能しない。
+    # 代わりに明示的に shutdown(wait=False) を呼ぶ。
+    # timeout 到達時はスレッドが裏で生きたままだが、subprocess 側にも
+    # 120 秒 / 60 秒の独自 timeout があるため無限ハングはしない。
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = ex.submit(_do_render)
+        try:
+            out = future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            return {
+                "rendered": False,
+                "reason": "timeout",
+                "timeout_s": timeout,
+            }
+        except Exception as e:  # renderer itself raised
+            return {"rendered": False, "reason": "failed", "error": f"{type(e).__name__}: {e}"}
+    finally:
+        ex.shutdown(wait=False)
+
+    try:
+        # render_slide may return multiple lines; take the last one (target slide)
+        lines = out.strip().split("\n")
+        return {"rendered": True, "preview_path": lines[-1]}
+    except Exception as e:
+        return {"rendered": False, "reason": "failed", "error": f"{type(e).__name__}: {e}"}
+
+
+def _success_with_render(primary: Any, render_info: Dict[str, Any]) -> str:
+    """Compose a success payload plus the auto-render outcome.
+
+    - Render disabled → plain ``{"ok": true, "result": <primary>}``.
+    - Render succeeded → result wraps ``{"value": primary, "preview_path": ...}``.
+    - Render failed/timed out → result wraps ``{"value": primary,
+      "render_warning": {...}}``.
+    """
+    if not render_info.get("rendered") and render_info.get("reason") == "disabled":
+        return _success(primary)
+    if render_info.get("rendered"):
+        return _success(
+            {"value": primary, "preview_path": render_info.get("preview_path")}
+        )
+    # Failed / timeout — primary still succeeded.
+    return _success({"value": primary, "render_warning": render_info})
 
 
 # --- Presentation ------------------------------------------------
@@ -255,7 +435,7 @@ def pptx_create(
 ) -> str:
     """Create a new blank PPTX file. Default is 16:9 widescreen."""
     try:
-        return create_presentation(file_path, width_inches, height_inches)
+        return _success(create_presentation(file_path, width_inches, height_inches))
     except Exception as e:
         return _err(e)
 
@@ -264,7 +444,7 @@ def pptx_create(
 def pptx_get_info(file_path: str) -> str:
     """Get presentation overview: slide count, dimensions, shape summaries."""
     try:
-        return get_presentation_info(file_path)
+        return _success(get_presentation_info(file_path))
     except Exception as e:
         return _err(e)
 
@@ -273,7 +453,7 @@ def pptx_get_info(file_path: str) -> str:
 def pptx_read_slide(file_path: str, slide_index: int) -> str:
     """Read detailed content of a slide -- all shapes, text, tables."""
     try:
-        return read_slide(file_path, slide_index)
+        return _success(read_slide(file_path, slide_index))
     except Exception as e:
         return _err(e)
 
@@ -282,7 +462,7 @@ def pptx_read_slide(file_path: str, slide_index: int) -> str:
 def pptx_list_shapes(file_path: str, slide_index: int) -> str:
     """List all shapes on a slide with indices, types, positions, text preview."""
     try:
-        return list_shapes(file_path, slide_index)
+        return _success(list_shapes(file_path, slide_index))
     except Exception as e:
         return _err(e)
 
@@ -293,7 +473,7 @@ def pptx_list_shapes(file_path: str, slide_index: int) -> str:
 def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
     """Add a new slide. Layout 6 = Blank (most common)."""
     try:
-        return add_slide(file_path, layout_index)
+        return _success(add_slide(file_path, layout_index))
     except Exception as e:
         return _err(e)
 
@@ -302,7 +482,7 @@ def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
 def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
     """Move a slide from one position to another. 0-based indices."""
     try:
-        return move_slide(file_path, from_index, to_index)
+        return _success(move_slide(file_path, from_index, to_index))
     except Exception as e:
         return _err(e)
 
@@ -311,7 +491,7 @@ def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
 def pptx_delete_slide(file_path: str, slide_index: int) -> str:
     """Delete a slide by 0-based index."""
     try:
-        return delete_slide(file_path, slide_index)
+        return _success(delete_slide(file_path, slide_index))
     except Exception as e:
         return _err(e)
 
@@ -320,7 +500,7 @@ def pptx_delete_slide(file_path: str, slide_index: int) -> str:
 def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
     """Duplicate a slide (appended at end)."""
     try:
-        return duplicate_slide(file_path, slide_index)
+        return _success(duplicate_slide(file_path, slide_index))
     except Exception as e:
         return _err(e)
 
@@ -329,7 +509,7 @@ def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
 def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> str:
     """Set solid background color for a slide. Color as hex e.g. '051C2C' (without #)."""
     try:
-        return set_slide_background(file_path, slide_index, color)
+        return _success(set_slide_background(file_path, slide_index, color))
     except Exception as e:
         return _err(e)
 
@@ -338,7 +518,7 @@ def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> s
 def pptx_set_dimensions(file_path: str, width: float, height: float) -> str:
     """Set presentation slide dimensions in inches (applies to all slides)."""
     try:
-        return set_slide_dimensions(file_path, width, height)
+        return _success(set_slide_dimensions(file_path, width, height))
     except Exception as e:
         return _err(e)
 
@@ -367,11 +547,11 @@ def pptx_add_textbox(
 ) -> str:
     """Add a text box to a slide. Position and size in inches. Alignment: left/center/right. Vertical anchor: top/middle/bottom."""
     try:
-        return add_textbox(
+        return _success(add_textbox(
             file_path, slide_index, left, top, width, height, text,
             font_name, font_size, font_color, bold, italic,
             alignment, vertical_anchor, word_wrap, line_spacing, underline,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -407,7 +587,7 @@ def pptx_add_auto_fit_textbox(
             vertical_anchor=vertical_anchor,
             truncate_with_ellipsis=truncate_with_ellipsis,
         )
-        return json.dumps(result)
+        return _success(result)
     except Exception as e:
         return _err(e)
 
@@ -447,22 +627,39 @@ def pptx_add_flex_container(
     """
     try:
         if not isinstance(items_json, str):
-            return (
-                "[INVALID_PARAMETER] items_json must be a JSON string "
-                "(例: '[{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}]'). "
-                "生の Python list は受け付けない (#35 breaking change)。"
+            return _error(
+                "INVALID_PARAMETER",
+                "items_json must be a JSON string, not a raw Python list.",
+                parameter="items_json",
+                hint=(
+                    "Pass a JSON-stringified array, e.g., "
+                    "'[{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}]'."
+                ),
+                issue=35,
             )
-        items = json.loads(items_json)
+        try:
+            items = json.loads(items_json)
+        except json.JSONDecodeError as e:
+            return _error(
+                "INVALID_PARAMETER",
+                f"Invalid JSON in items_json: {e}",
+                parameter="items_json",
+                hint="items_json must be a JSON-stringified array.",
+                issue=35,
+            )
         if not isinstance(items, list):
-            return "[INVALID_PARAMETER] items_json must decode to a JSON array."
+            return _error(
+                "INVALID_PARAMETER",
+                "items_json must decode to a JSON array.",
+                parameter="items_json",
+                issue=35,
+            )
         result = add_flex_container_file(
             file_path, slide_index, items,
             left=left, top=top, width=width, height=height,
             direction=direction, gap=gap, padding=padding, align=align,
         )
-        return json.dumps(result)
-    except json.JSONDecodeError as e:
-        return f"[INVALID_PARAMETER] Invalid JSON in items_json: {e}"
+        return _success(result)
     except Exception as e:
         return _err(e)
 
@@ -485,11 +682,11 @@ def pptx_edit_text(
 ) -> str:
     """Edit text content and formatting in an existing shape's paragraph. Supports all formatting: font, color, bold, italic, underline, alignment, line spacing."""
     try:
-        return edit_text(
+        return _success(edit_text(
             file_path, slide_index, shape_index, text, paragraph_index,
             font_name, font_size, font_color, bold, italic, underline,
             alignment, line_spacing,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -511,11 +708,11 @@ def pptx_add_paragraph(
 ) -> str:
     """Append a new paragraph to an existing shape's text frame. Useful for multi-line text."""
     try:
-        return add_paragraph(
+        return _success(add_paragraph(
             file_path, slide_index, shape_index, text,
             font_name, font_size, font_color, bold, italic, underline,
             alignment, line_spacing,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -544,11 +741,11 @@ def pptx_add_shape(
 ) -> str:
     """Add an auto shape. Types: rectangle, rounded_rectangle, oval, triangle, diamond, chevron, arrow_right, arrow_left, arrow_up, arrow_down, callout, star_5, hexagon, pentagon. Position/size in inches. Colors as hex. WARNING: text inside shapes renders BEHIND any shapes placed on top. For labels over background shapes, use pptx_add_textbox instead."""
     try:
-        return add_shape(
+        return _success(add_shape(
             file_path, slide_index, shape_type, left, top, width, height,
             fill_color, line_color, line_width, no_line,
             text, font_name, font_size, font_color, bold, alignment,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -565,7 +762,7 @@ def pptx_add_image(
 ) -> str:
     """Add an image (PNG, JPG, SVG) to a slide. Position in inches. If only width or height is given, aspect ratio is preserved. If both given, image stretches to fit."""
     try:
-        return add_image(file_path, slide_index, image_path, left, top, width, height)
+        return _success(add_image(file_path, slide_index, image_path, left, top, width, height))
     except Exception as e:
         return _err(e)
 
@@ -574,7 +771,7 @@ def pptx_add_image(
 def pptx_delete_shape(file_path: str, slide_index: int, shape_index: int) -> str:
     """Delete a shape from a slide by its 0-based index."""
     try:
-        return delete_shape(file_path, slide_index, shape_index)
+        return _success(delete_shape(file_path, slide_index, shape_index))
     except Exception as e:
         return _err(e)
 
@@ -597,11 +794,11 @@ def pptx_format_shape(
 ) -> str:
     """Reposition, resize, or restyle an existing shape. Dimensions in inches."""
     try:
-        return format_shape(
+        return _success(format_shape(
             file_path, slide_index, shape_index,
             left, top, width, height,
             fill_color, no_fill, line_color, line_width, no_line, rotation,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -629,12 +826,12 @@ def pptx_add_table(
     try:
         rows = json.loads(rows_json)
         col_widths = json.loads(col_widths_json) if col_widths_json else None
-        return add_table(
+        return _success(add_table(
             file_path, slide_index, rows, left, top, width,
             col_widths, row_height, font_size,
             header_bg, header_fg, alt_row_bg, border_color,
             0.5, no_vertical_borders,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -655,10 +852,10 @@ def pptx_edit_table_cell(
 ) -> str:
     """Edit a single table cell's text and formatting."""
     try:
-        return edit_table_cell(
+        return _success(edit_table_cell(
             file_path, slide_index, shape_index, row, col,
             text, font_size, font_color, bold, bg_color, alignment,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -673,7 +870,7 @@ def pptx_edit_table_cells(
     """Batch edit multiple table cells. edits_json: JSON array of objects e.g. '[{"row":0,"col":1,"text":"new"}]'. Each: {row, col, text?, font_size?, font_color?, bold?, bg_color?}."""
     try:
         edits = json.loads(edits_json)
-        return edit_table_cells(file_path, slide_index, shape_index, edits)
+        return _success(edit_table_cells(file_path, slide_index, shape_index, edits))
     except Exception as e:
         return _err(e)
 
@@ -691,10 +888,10 @@ def pptx_format_table(
 ) -> str:
     """Apply bulk formatting to an entire table (font, header colors, alternating rows)."""
     try:
-        return format_table(
+        return _success(format_table(
             file_path, slide_index, shape_index,
             font_name, font_size, header_bg, header_fg, alt_row_bg,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -708,13 +905,12 @@ def pptx_add_content_slide(
     source: str = None,
     page_number: int = None,
 ) -> str:
-    """Add a content slide with action title (auto-shrink to fit), divider line, optional source footnote and page number. McKinsey-style layout. Auto-renders a preview PNG. LAYOUT GUIDE: Body area is 1.15\" to 6.65\" (5.5\" usable height). Distribute content evenly across this range — avoid clustering content in the top half with empty bottom space."""
+    """Add a content slide with action title (auto-shrink to fit), divider line, optional source footnote and page number. McKinsey-style layout. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1. LAYOUT GUIDE: Body area is 1.15\" to 6.65\" (5.5\" usable height). Distribute content evenly across this range — avoid clustering content in the top half with empty bottom space."""
     try:
         result = add_content_slide(file_path, title, source, page_number)
-        # Extract slide index from result like "Added content slide [0]..."
         idx = int(result.split("[")[1].split("]")[0])
-        result += _auto_render(file_path, idx)
-        return result
+        render_info = _auto_render(file_path, idx)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -725,12 +921,12 @@ def pptx_add_section_divider(
     title: str,
     subtitle: str = "",
 ) -> str:
-    """Add a section divider slide with dark background, centered title, and accent stripes. Auto-renders a preview PNG."""
+    """Add a section divider slide with dark background, centered title, and accent stripes. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
     try:
         result = add_section_divider(file_path, title, subtitle)
         idx = int(result.split("[")[1].split("]")[0])
-        result += _auto_render(file_path, idx)
-        return result
+        render_info = _auto_render(file_path, idx)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -742,11 +938,11 @@ def pptx_add_kpi_row(
     kpis_json: str,
     y: float,
 ) -> str:
-    """Add a row of KPI callout boxes. kpis_json: JSON array e.g. '[{"value":"107.8M","label":"Revenue"}]'. y = vertical position in inches. Auto-renders a preview PNG."""
+    """Add a row of KPI callout boxes. kpis_json: JSON array e.g. '[{"value":"107.8M","label":"Revenue"}]'. y = vertical position in inches. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
     try:
         result = add_kpi_row(file_path, slide_index, kpis_json, y)
-        result += _auto_render(file_path, slide_index)
-        return result
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -761,11 +957,11 @@ def pptx_add_bullet_block(
     width: float,
     height: float,
 ) -> str:
-    """Add a bulleted text block with multiple items. items_json: JSON array of strings e.g. '["Item 1","Item 2"]'. Auto-renders a preview PNG."""
+    """Add a bulleted text block with multiple items. items_json: JSON array of strings e.g. '["Item 1","Item 2"]'. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
     try:
         result = add_bullet_block(file_path, slide_index, items_json, left, top, width, height)
-        result += _auto_render(file_path, slide_index)
-        return result
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -795,7 +991,7 @@ def pptx_add_responsive_card_row(
       - "fill":    all cards fill max_height (short content is centered vertically).
 
     Returns a JSON object: {"cards": [{"left","top","width","height"}, ...], "consumed_height": float}.
-    Auto-renders a preview PNG.
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
     """
     try:
         card_dicts = json.loads(cards_json) if isinstance(cards_json, str) else cards_json
@@ -841,14 +1037,13 @@ def pptx_add_responsive_card_row(
             ],
             "consumed_height": consumed,
         }
-        out = json.dumps(result)
 
         # すべての in-memory 処理と return 値構築が成功した最後に保存する。
         # これにより中途半端な save による破損状態を防ぐ (#34)。
         save_pptx(prs, file_path)
 
-        out += _auto_render(file_path, slide_index)
-        return out
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -860,7 +1055,7 @@ def pptx_build_slide(
     file_path: str,
     spec_json: str,
 ) -> str:
-    """Build an entire slide in ONE call from a JSON spec. Single file open/save. Much faster than individual tool calls.
+    """Build an entire slide in ONE call from a JSON spec. Single file open/save. Much faster than individual tool calls. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
 
     spec_json format:
     {
@@ -885,12 +1080,9 @@ def pptx_build_slide(
     LAYOUT GUIDE: Body area is 1.15" to 6.65" (5.5" usable). Distribute elements evenly."""
     try:
         result = build_slide(file_path, spec_json)
-        # Auto-render
-        import json
-        spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
         idx_str = result.split("[")[1].split("]")[0]
-        result += _auto_render(file_path, int(idx_str))
-        return result
+        render_info = _auto_render(file_path, int(idx_str))
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -900,14 +1092,14 @@ def pptx_build_deck(
     file_path: str,
     slides_json: str,
 ) -> str:
-    """Build an ENTIRE DECK in ONE call from a JSON array of slide specs. Single file open/save for all slides. Use this for generating complete presentations efficiently.
+    """Build an ENTIRE DECK in ONE call from a JSON array of slide specs. Single file open/save for all slides. Use this for generating complete presentations efficiently. Auto-renders a preview PNG of the last slide ONLY when PPTX_MCP_AUTO_RENDER=1.
 
     slides_json: JSON array where each element is a slide spec (same format as pptx_build_slide).
     Example: '[{"layout":"content","title":"Slide 1","elements":[...]},{"layout":"section_divider","title":"Section"}]'"""
     try:
         result = build_deck(file_path, slides_json)
-        result += _auto_render(file_path, -1)
-        return result
+        render_info = _auto_render(file_path, -1)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -933,15 +1125,16 @@ def pptx_add_connector(
     """Add a connector line between two points. Position in inches.
     connector_type: straight/elbow/curve.
     Arrows: none/triangle/stealth/diamond/oval/open.
-    dash_style: solid/dash/dot/dash_dot/long_dash."""
+    dash_style: solid/dash/dot/dash_dot/long_dash.
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
     try:
         result = add_connector(
             file_path, slide_index, begin_x, begin_y, end_x, end_y,
             connector_type, color, width, dash_style,
             begin_arrow, end_arrow, arrow_size,
         )
-        result += _auto_render(file_path, slide_index)
-        return result
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -968,7 +1161,8 @@ def pptx_add_callout(
     border_color: str = None,
 ) -> str:
     """Add a callout annotation: textbox + connector arrow pointing to target.
-    Auto-places label if label_x/label_y omitted. Position in inches."""
+    Auto-places label if label_x/label_y omitted. Position in inches.
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
     try:
         result = add_callout(
             file_path, slide_index, text, target_x, target_y,
@@ -976,8 +1170,8 @@ def pptx_add_callout(
             connector_type, font_size, font_color, font_bold,
             line_color, line_width, arrow_end, bg_color, border_color,
         )
-        result += _auto_render(file_path, slide_index)
-        return result
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -998,10 +1192,10 @@ def pptx_list_icons(
     Common icons: briefcase, chart, person, globe, airplane, laptop, phone, car, building, arrow,
     calendar, clock, document, email, gear, handshake, key, lock, money, star, target, trophy, user."""
     try:
-        return list_icons_formatted(
+        return _success(list_icons_formatted(
             category=category or None,
             search=search or None,
-        )
+        ))
     except Exception as e:
         return _err(e)
 
@@ -1021,11 +1215,12 @@ def pptx_add_icon(
     """Add a vector icon from the built-in library to a slide.
     Position in inches. If only width or height given, aspect ratio is preserved.
     Colors as hex (e.g. '2251FF') or theme token ('accent', 'primary').
-    Use pptx_list_icons to browse available icons."""
+    Use pptx_list_icons to browse available icons.
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
     try:
         result = add_icon(file_path, slide_index, icon_id, left, top, width, height, color, outline_color)
-        result += _auto_render(file_path, slide_index)
-        return result
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -1047,14 +1242,22 @@ def pptx_add_chart(
     data_labels_position, data_labels_number_format, axis_value_title, axis_value_min/max,
     axis_value_gridlines, gap_width, overlap, theme (mckinsey/deloitte/neutral).
 
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+
     Example: '{"chart_type":"stacked_column","categories":["Q1","Q2"],"series":[{"name":"Rev","values":[10,20],"color":"2251FF"}],"data_labels_show":true}'"""
     try:
-        spec = json.loads(chart_json) if isinstance(chart_json, str) else chart_json
+        try:
+            spec = json.loads(chart_json) if isinstance(chart_json, str) else chart_json
+        except json.JSONDecodeError as e:
+            return _error(
+                "INVALID_PARAMETER",
+                f"Invalid JSON in chart_json: {e}",
+                parameter="chart_json",
+                hint="chart_json must be a JSON-stringified object.",
+            )
         result = add_chart(file_path, slide_index, spec)
-        result += _auto_render(file_path, slide_index)
-        return result
-    except json.JSONDecodeError as e:
-        return f"[INVALID_PARAMETER] Invalid JSON in chart_json: {e}"
+        render_info = _auto_render(file_path, slide_index)
+        return _success_with_render(result, render_info)
     except Exception as e:
         return _err(e)
 
@@ -1069,7 +1272,7 @@ def pptx_render_slide(
 ) -> str:
     """Render PPTX slide(s) to PNG image(s) for visual verification. Returns path(s) to PNG files that can be viewed with the Read tool. slide_index: 0-based (-1 = all slides). dpi: 150 for review, 300 for print."""
     try:
-        return render_slide(file_path, slide_index, dpi=dpi)
+        return _success(render_slide(file_path, slide_index, dpi=dpi))
     except Exception as e:
         return _err(e)
 
@@ -1124,12 +1327,15 @@ def pptx_check_layout(
     """Validate slide layouts: overlaps, out-of-bounds, text overflow,
     unreadable font, title/divider collision, inconsistent gaps.
 
-    既定では human-readable な legacy string を返す (後方互換)。
+    v0.2.0+: tool 戻り値は ``{"ok": true, "result": <payload>}`` で包まれる。
+    ``result`` 内は従来どおり:
 
-    - Clean: ``"All slides clean — no overlaps, out-of-bounds, text overflow, or readability issues detected."``
-    - 問題あり: ``"Found N layout issues:\\n- Slide <i> [severity] <category>: <msg>"``
+    - ``detailed=False`` (既定): legacy human-readable string
+      (``"All slides clean …"`` または ``"Found N layout issues:\\n…"``)。
+      #33 で導入された文字列フォーマットはそのまま維持される。
+    - ``detailed=True``: JSON 文字列 (中身は以下のスキーマ)。
 
-    ``detailed=True`` を渡すと JSON 文字列を返す。スキーマは以下のとおり::
+    ``detailed=True`` schema::
 
         {
             "slides": [
@@ -1151,8 +1357,8 @@ def pptx_check_layout(
             overflow_tolerance_pct=overflow_tolerance_pct,
         )
         if detailed:
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        return _format_check_layout_summary(result)
+            return _success(json.dumps(result, ensure_ascii=False, indent=2))
+        return _success(_format_check_layout_summary(result))
     except Exception as e:
         return _err(e)
 
