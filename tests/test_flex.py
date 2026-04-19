@@ -165,22 +165,51 @@ def test_column_direction_stack_vertically():
         assert _approx(w, 5.0)
 
 
-def test_align_center_cross_axis_size():
-    """align='center' の cross サイズは usable_cross と一致する (MVP 仕様)."""
-    renders = [_recorder() for _ in range(1)]
-    items = [
-        FlexItem(sizing="fixed", size=3.0, render=renders[0][0]),
-    ]
+def test_align_non_stretch_raises():
+    """#24: align='center' はサイレントに stretch 扱いせず INVALID_PARAMETER."""
+    render, _ = _recorder()
+    items = [FlexItem(sizing="fixed", size=3.0, render=render)]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=2.0,
+            direction="row", gap=0.0, padding=0.0, align="center",
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    msg = str(excinfo.value)
+    assert "center" in msg
+    assert "stretch" in msg
+
+
+@pytest.mark.parametrize("bad_align", ["start", "center", "end"])
+def test_align_non_stretch_all_values_raise(bad_align):
+    """start/center/end すべてが同様に拒否される (MVP)."""
+    render, _ = _recorder()
+    items = [FlexItem(sizing="fixed", size=3.0, render=render)]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=2.0,
+            direction="row", gap=0.0, padding=0.0, align=bad_align,  # type: ignore[arg-type]
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+
+
+def test_align_stretch_ok_regression():
+    """align='stretch' は従来どおり成功する (回帰防止)."""
+    render, calls = _recorder()
+    items = [FlexItem(sizing="fixed", size=3.0, render=render)]
     allocs = add_flex_container(
         slide=None,
         items=items,
         left=0.0, top=0.0, width=10.0, height=2.0,
-        direction="row", gap=0.0, padding=0.0, align="center",
+        direction="row", gap=0.0, padding=0.0, align="stretch",
     )
-    # cross サイズは usable_cross = height - 2*padding = 2.0
     assert _approx(allocs[0][3], 2.0)
-    # cross 位置は padding から
     assert _approx(allocs[0][1], 0.0)
+    assert len(calls) == 1
 
 
 def test_padding_insets_all_items():
@@ -408,3 +437,77 @@ def test_render_receives_correct_args():
     )
     assert len(calls) == 1
     assert calls[0] == allocs[0]
+
+
+# ── #43: _build_declarative_item strict unknown-key validation ──────
+
+class TestDeclarativeItemStrictKeys:
+    """``_build_declarative_item`` が未知キーを明示的に拒否する (#43)."""
+
+    def test_text_unknown_font_size_raises_with_hint(self):
+        """``font_size`` (``_pt`` 欠落) は弾かれ、hint として
+        ``font_size_pt`` が allowed に含まれる。"""
+        from pptx_mcp_server.engine.flex import _build_declarative_item
+
+        created: list = []
+        with pytest.raises(EngineError) as excinfo:
+            _build_declarative_item(
+                slide=None,
+                spec={"type": "text", "text": "hi", "font_size": 12},
+                created_shape_indices=created,
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "font_size" in msg
+        # allowed 集合に font_size_pt が含まれることで、LLM が正しいキーを発見できる
+        assert "font_size_pt" in msg
+        # 描画は走っていない
+        assert created == []
+
+    def test_text_valid_font_size_pt_ok_regression(self):
+        """``font_size_pt`` は既知キーなので成功する (回帰防止)。"""
+        from pptx_mcp_server.engine.flex import _build_declarative_item
+
+        created: list = []
+        item = _build_declarative_item(
+            slide=None,
+            spec={"type": "text", "text": "hi", "font_size_pt": 12},
+            created_shape_indices=created,
+        )
+        assert item.sizing == "grow"
+        # render callback は未呼び出し (slide=None での実 render は呼び元責務)
+        assert created == []
+
+    def test_rectangle_unknown_key_raises(self):
+        """rectangle の未知キーは allowed 集合と共にエラーに出現する。"""
+        from pptx_mcp_server.engine.flex import _build_declarative_item
+
+        created: list = []
+        with pytest.raises(EngineError) as excinfo:
+            _build_declarative_item(
+                slide=None,
+                spec={
+                    "type": "rectangle",
+                    "fill_color": "FF0000",
+                    "badkey": 1,
+                },
+                created_shape_indices=created,
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "badkey" in msg
+        assert "rectangle" in msg
+
+    def test_unknown_type_still_raises_regression(self):
+        """``type`` が未知の場合は従来どおり弾く (既存挙動の回帰)。"""
+        from pptx_mcp_server.engine.flex import _build_declarative_item
+
+        created: list = []
+        with pytest.raises(EngineError) as excinfo:
+            _build_declarative_item(
+                slide=None,
+                spec={"type": "ellipse"},
+                created_shape_indices=created,
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        assert "ellipse" in str(excinfo.value)

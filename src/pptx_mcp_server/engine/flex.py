@@ -155,13 +155,27 @@ def add_flex_container(
         direction: 主軸方向。``"row"`` または ``"column"``。
         gap: 子要素間のスペース (inches)。
         padding: コンテナ内側の余白 (inches、全 4 辺に適用)。
-        align: cross 軸方向の整列。``"stretch"`` 以外は現状、cross サイズ
-            自体は stretch と同等に扱う (intrinsic cross 未測定のため MVP)。
+        align: cross 軸方向の整列。現状 MVP では ``"stretch"`` のみサポート
+            する。``"start"``・``"center"``・``"end"`` は intrinsic cross
+            サイズの測定が未実装であるため、指定された場合は
+            ``EngineError(INVALID_PARAMETER)`` を送出する (#24)。サイレント
+            に stretch 扱いに降格させない。
 
-    Returns:
-        各 item に割り当てられた ``(left, top, width, height)`` のタプル
-        のリスト。``items`` と同順。
+    Raises:
+        EngineError: ``align`` が ``"stretch"`` 以外のとき
+            (``INVALID_PARAMETER``)、もしくは fixed+content の合計が
+            usable_main を超過しているとき。
     """
+    # #24: MVP 実装は cross 軸の intrinsic サイズを測定しないため、``center``・
+    # ``start``・``end`` を本来の意味で実装できない。従来はサイレントに
+    # stretch として扱っていたが、LLM エージェントには失敗シグナルが届かず
+    # 修正機会を奪っていた。明示的に拒否する。
+    if align != "stretch":
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"align={align!r} is not yet implemented; use 'stretch' for MVP.",
+        )
+
     if not items:
         return []
 
@@ -259,6 +273,35 @@ def add_flex_container(
 
 _SUPPORTED_ITEM_TYPES = ("text", "rectangle")
 
+# #43: item spec に許可するキーを ``type`` ごとに明示する。未知キーは
+# サイレントに無視せず ``INVALID_PARAMETER`` を送出し、LLM エージェントの
+# typo (例: ``font_size`` ではなく ``font_size_pt`` が正) を再試行時に
+# 明確にフィードバックする。
+_ALLOWED_COMMON: frozenset[str] = frozenset(
+    {"type", "sizing", "size", "grow", "content_size", "min_size", "max_size"}
+)
+_ALLOWED_TEXT: frozenset[str] = _ALLOWED_COMMON | frozenset(
+    {
+        "text",
+        "font_name",
+        "font_size_pt",
+        "min_size_pt",
+        "bold",
+        "color_hex",
+        "align",
+        "vertical_anchor",
+        "truncate_with_ellipsis",
+    }
+)
+_ALLOWED_RECT: frozenset[str] = _ALLOWED_COMMON | frozenset(
+    {"fill_color", "line_color", "line_width", "no_line"}
+)
+
+_ALLOWED_BY_TYPE: dict[str, frozenset[str]] = {
+    "text": _ALLOWED_TEXT,
+    "rectangle": _ALLOWED_RECT,
+}
+
 
 def _build_declarative_item(
     slide,
@@ -273,6 +316,10 @@ def _build_declarative_item(
     - ``"rectangle"``: ``_add_shape`` で塗りつぶし矩形を描画する。
 
     描画結果 (shape_index) は ``created_shape_indices`` に追記される。
+
+    spec に未知のキーが含まれる場合は ``EngineError(INVALID_PARAMETER)``
+    を送出する (#43)。``type`` ごとに許可キー集合を定義し、typo を
+    サイレントに握りつぶさない。
     """
     sizing: SizingMode = spec.get("sizing", "grow")
     if sizing not in ("fixed", "grow", "content"):
@@ -287,6 +334,18 @@ def _build_declarative_item(
             ErrorCode.INVALID_PARAMETER,
             f"Unknown flex item type '{item_type}'. "
             f"Supported: {', '.join(_SUPPORTED_ITEM_TYPES)}.",
+        )
+
+    # #43: 未知キーの検証。``type`` が既知なので type-specific な allowed を参照。
+    allowed = _ALLOWED_BY_TYPE[item_type]
+    unknown = set(spec.keys()) - allowed
+    if unknown:
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            (
+                f"Unknown keys {sorted(unknown)} for flex item type "
+                f"{item_type!r}; allowed keys: {sorted(allowed)}."
+            ),
         )
 
     size = float(spec.get("size", 0.0))

@@ -12,6 +12,7 @@ Parameter conventions (new tools):
 """
 
 import json
+from dataclasses import fields
 from typing import Any, Dict
 
 try:
@@ -24,6 +25,7 @@ except ImportError as e:
 
 from .engine import (
     EngineError,
+    ErrorCode,
     create_presentation,
     get_presentation_info,
     read_slide,
@@ -796,6 +798,21 @@ def pptx_add_responsive_card_row(
     """
     try:
         card_dicts = json.loads(cards_json) if isinstance(cards_json, str) else cards_json
+        # #43: CardSpec dataclass は未知キーを TypeError として弾くが、
+        # MCP ツール層で明示的に ``INVALID_PARAMETER`` として報告し、
+        # どのカード・どのキーが原因かを LLM エージェントが再試行時に
+        # 解釈できる形式で返す。
+        _card_known_keys = {f.name for f in fields(CardSpec)}
+        for i, spec in enumerate(card_dicts):
+            unknown = set(spec.keys()) - _card_known_keys
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"card[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_card_known_keys)}."
+                    ),
+                )
         cards = [CardSpec(**d) for d in card_dicts]
         prs = open_pptx(file_path)
         slide = _get_slide(prs, slide_index)
