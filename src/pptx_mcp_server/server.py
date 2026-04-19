@@ -771,7 +771,7 @@ def pptx_add_responsive_card_row(
         prs = open_pptx(file_path)
         slide = _get_slide(prs, slide_index)
 
-        consumed = add_responsive_card_row(
+        placements, consumed = add_responsive_card_row(
             slide,
             cards,
             left=left, top=top, width=width, max_height=max_height,
@@ -781,30 +781,17 @@ def pptx_add_responsive_card_row(
         )
         save_pptx(prs, file_path)
 
-        # 各カードの (left, top, width, height) を計算する。行の左端 + 累積幅+ gap。
-        n = len(cards)
-        effective_gap = gap if n > 1 else 0.0
-        placements: list[dict] = []
-        x = left
-        # 実際の各カードの高さを cards と height_mode から再現する
-        from .engine.cards import _content_height  # 内部ヘルパを利用
-
-        if height_mode == "content":
-            heights = [max(min(_content_height(c), max_height), min_card_height) for c in cards]
-        else:
-            heights = [consumed] * n
-
-        for card, h in zip(cards, heights):
-            placements.append({
-                "left": x,
-                "top": top,
-                "width": card.width,
-                "height": h,
-            })
-            x += card.width + effective_gap
-
+        # CardPlacement を JSON 化可能な dict に変換する
         result = {
-            "cards": placements,
+            "cards": [
+                {
+                    "left": p.left,
+                    "top": p.top,
+                    "width": p.width,
+                    "height": p.height,
+                }
+                for p in placements
+            ],
             "consumed_height": consumed,
         }
         out = json.dumps(result)

@@ -474,9 +474,13 @@ def list_shapes(file_path, slide_index):
 
 # ── Auto-fit textbox ────────────────────────────────────────────
 
-# 内側 padding (inches)。左右に同量の padding を見込むため、usable width は
-# width - 2 * _AUTO_FIT_PADDING となる。
-_AUTO_FIT_PADDING: float = 0.05
+# 内側 padding (inches、左右各側)。左右に同量の padding を見込むため、
+# usable width は width - 2 * _AUTO_FIT_PADDING_PER_SIDE となる。
+# cards.py など他モジュールからも参照できるよう module-level の定数として公開する。
+_AUTO_FIT_PADDING_PER_SIDE: float = 0.05
+
+# 後方互換のための別名 (旧名)。新規コードは _AUTO_FIT_PADDING_PER_SIDE を使うこと。
+_AUTO_FIT_PADDING: float = _AUTO_FIT_PADDING_PER_SIDE
 
 # font size 縮小ステップ (pt)
 _AUTO_FIT_STEP_PT: float = 0.5

@@ -2,18 +2,24 @@
 
 ``add_responsive_card_row`` の 3 つの ``height_mode`` (content / max / fill)
 と、単一カード・最小高 clamp・アクセントバー描画・消費高返却の各挙動を
-網羅する。
+網羅する。また #26 (CardSpec mutation + unknown height_mode) と
+#27 (padding 二重計上 → text clip) の再発防止テストを含む。
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pptx_mcp_server.engine.cards import (
+    CardPlacement,
     CardSpec,
-    add_responsive_card_row,
     _content_height,
+    _estimate_block_heights,
+    add_responsive_card_row,
 )
+from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
 
 
 # EMU (914400 per inch) → inches 換算ユーティリティ
@@ -63,7 +69,7 @@ def test_max_mode_identical_content(slide):
         CardSpec(title="Strategy", body="Short body text."),
         CardSpec(title="Strategy", body="Short body text."),
     ]
-    consumed = add_responsive_card_row(
+    placements, consumed = add_responsive_card_row(
         slide, cards,
         left=0.5, top=1.0, width=12.0, max_height=4.0,
         gap=0.2, height_mode="max", min_card_height=0.5,
@@ -75,6 +81,10 @@ def test_max_mode_identical_content(slide):
     assert heights[1] == pytest.approx(heights[2], abs=1e-4)
     # 消費高 == 各カード高
     assert consumed == pytest.approx(heights[0], abs=1e-4)
+    # placements の長さ/高さ一致
+    assert len(placements) == 3
+    for p, h in zip(placements, heights):
+        assert p.height == pytest.approx(h, abs=1e-4)
 
 
 def test_max_mode_different_content_lengths_align(slide):
@@ -85,7 +95,7 @@ def test_max_mode_different_content_lengths_align(slide):
     long_card = CardSpec(title="T", body=long_body)
 
     cards = [short, medium, long_card]
-    consumed = add_responsive_card_row(
+    placements, consumed = add_responsive_card_row(
         slide, cards,
         left=0.5, top=1.0, width=12.0, max_height=6.0,
         gap=0.2, height_mode="max",
@@ -95,8 +105,9 @@ def test_max_mode_different_content_lengths_align(slide):
     # 全カード同一
     assert heights[0] == pytest.approx(heights[1], abs=1e-4)
     assert heights[1] == pytest.approx(heights[2], abs=1e-4)
-    # 高さ == 最大 content 高
-    max_content = max(_content_height(c) for c in cards)
+    # 高さ == 最大 content 高 (placement の width で測る)
+    card_w = placements[0].width
+    max_content = max(_content_height(c, card_w) for c in cards)
     assert heights[0] == pytest.approx(max_content, abs=1e-3)
     assert consumed == pytest.approx(heights[0], abs=1e-4)
 
@@ -128,7 +139,7 @@ def test_fill_mode_uses_max_height(slide):
         CardSpec(title="B", body="Short body."),
         CardSpec(title="C", body="Short body."),
     ]
-    consumed = add_responsive_card_row(
+    placements, consumed = add_responsive_card_row(
         slide, cards,
         left=0.5, top=0.5, width=12.0, max_height=5.0,
         gap=0.2, height_mode="fill",
@@ -138,6 +149,8 @@ def test_fill_mode_uses_max_height(slide):
     for h in heights:
         assert h == pytest.approx(5.0, abs=1e-4)
     assert consumed == pytest.approx(5.0, abs=1e-4)
+    for p in placements:
+        assert p.height == pytest.approx(5.0, abs=1e-4)
 
 
 def test_min_card_height_clamp(slide):
@@ -161,14 +174,14 @@ def test_min_card_height_clamp(slide):
 def test_single_card_fills_row_width(slide):
     """単一カード (n == 1): gap を無視し行幅すべてをそのカードが占める."""
     cards = [CardSpec(title="Only", body="Alone in the row.")]
-    add_responsive_card_row(
+    placements, _ = add_responsive_card_row(
         slide, cards,
         left=1.0, top=1.0, width=8.0, max_height=4.0,
         gap=0.5, height_mode="max",
     )
 
-    # 単一カードの width 書き戻し
-    assert cards[0].width == pytest.approx(8.0, abs=1e-4)
+    # placement の width が 8.0 と一致 (CardSpec.width には書き戻さない仕様)
+    assert placements[0].width == pytest.approx(8.0, abs=1e-4)
 
     # 先頭 shape = 背景矩形。width が 8.0 に一致
     first_shape = list(slide.shapes)[0]
@@ -206,7 +219,7 @@ def test_consumed_height_matches_max_for_max_and_fill(slide, one_slide_prs):
     """consumed_height == max/fill モードの共通カード高."""
     # max モード
     cards_max = [CardSpec(title="T", body="Body A"), CardSpec(title="T", body="Body B")]
-    consumed_max = add_responsive_card_row(
+    _, consumed_max = add_responsive_card_row(
         slide, cards_max,
         left=0.5, top=0.5, width=10.0, max_height=6.0,
         gap=0.2, height_mode="max",
@@ -219,7 +232,7 @@ def test_consumed_height_matches_max_for_max_and_fill(slide, one_slide_prs):
     one_slide_prs.slides.add_slide(layout)
     slide2 = one_slide_prs.slides[1]
     cards_fill = [CardSpec(title="T", body="A"), CardSpec(title="T", body="B")]
-    consumed_fill = add_responsive_card_row(
+    _, consumed_fill = add_responsive_card_row(
         slide2, cards_fill,
         left=0.5, top=0.5, width=10.0, max_height=4.5,
         gap=0.2, height_mode="fill",
@@ -228,3 +241,216 @@ def test_consumed_height_matches_max_for_max_and_fill(slide, one_slide_prs):
     assert consumed_fill == pytest.approx(4.5, abs=1e-4)
     for h in heights_fill:
         assert h == pytest.approx(4.5, abs=1e-4)
+
+
+# ── #26: CardSpec mutation + unknown height_mode ───────────────
+
+
+def test_cardspec_not_mutated_between_calls(slide, one_slide_prs):
+    """同じ ``CardSpec`` リストを 2 つの ``add_responsive_card_row`` に渡しても
+    2 回目の widths が 1 回目と一致し (幅リーク無し)、``CardSpec.width`` は
+    既定値 (0.0) のまま変わらない (#26 Problem A)."""
+    cards = [
+        CardSpec(title="A", body="Short."),
+        CardSpec(title="B", body="Short."),
+        CardSpec(title="C", body="Short."),
+    ]
+
+    # 1 回目の呼び出し
+    placements1, _ = add_responsive_card_row(
+        slide, cards,
+        left=0.5, top=0.5, width=12.0, max_height=3.0,
+        gap=0.2, height_mode="max",
+    )
+    widths1 = [p.width for p in placements1]
+    # 入力 CardSpec は mutation されない
+    for c in cards:
+        assert c.width == 0.0
+
+    # 同じリストで 2 枚目のスライドにもう 1 回レイアウト
+    layout = one_slide_prs.slide_layouts[6]
+    one_slide_prs.slides.add_slide(layout)
+    slide2 = one_slide_prs.slides[1]
+    placements2, _ = add_responsive_card_row(
+        slide2, cards,
+        left=0.5, top=0.5, width=12.0, max_height=3.0,
+        gap=0.2, height_mode="max",
+    )
+    widths2 = [p.width for p in placements2]
+
+    # 幅は一致
+    assert widths1 == pytest.approx(widths2, abs=1e-6)
+    # 入力 CardSpec はまだ変わっていない
+    for c in cards:
+        assert c.width == 0.0
+
+
+def test_unknown_height_mode_raises(slide):
+    """未知の ``height_mode`` (例: JSON 入力経由の ``'auto'``) は
+    ``EngineError(INVALID_PARAMETER)`` を投げる (#26 Problem B)."""
+    cards = [CardSpec(title="A", body="a")]
+    with pytest.raises(EngineError) as excinfo:
+        add_responsive_card_row(
+            slide, cards,
+            left=0.5, top=0.5, width=10.0, max_height=3.0,
+            gap=0.2, height_mode="auto",  # type: ignore[arg-type]
+            min_card_height=1.0,
+        )
+    err = excinfo.value
+    assert err.code == ErrorCode.INVALID_PARAMETER
+    msg = str(err)
+    assert "height_mode" in msg
+    assert "auto" in msg
+
+
+@pytest.mark.parametrize("mode", ["content", "max", "fill"])
+def test_valid_modes_still_work(blank_prs, mode):
+    """``content`` / ``max`` / ``fill`` は従来通り動作する (#26 回帰防止)."""
+    layout = blank_prs.slide_layouts[6]
+    blank_prs.slides.add_slide(layout)
+    slide = blank_prs.slides[0]
+
+    cards = [CardSpec(title="T", body="B"), CardSpec(title="T", body="B")]
+    placements, consumed = add_responsive_card_row(
+        slide, cards,
+        left=0.5, top=0.5, width=10.0, max_height=3.0,
+        gap=0.2, height_mode=mode,  # type: ignore[arg-type]
+        min_card_height=1.0,
+    )
+    assert len(placements) == 2
+    assert consumed > 0.0
+
+
+def test_placements_cover_row_width(slide):
+    """``CardPlacement`` の ``left/width`` がギャップを考慮して行全体を覆う."""
+    cards = [CardSpec(title=f"T{i}", body="Body") for i in range(3)]
+    placements, _ = add_responsive_card_row(
+        slide, cards,
+        left=1.0, top=1.0, width=12.0, max_height=3.0,
+        gap=0.2, height_mode="max",
+    )
+    assert len(placements) == 3
+    # 1 枚目の left と 3 枚目の right が行全体と一致
+    assert placements[0].left == pytest.approx(1.0, abs=1e-6)
+    last = placements[-1]
+    assert last.left + last.width == pytest.approx(1.0 + 12.0, abs=1e-3)
+    # top は全カード一致
+    for p in placements:
+        assert p.top == pytest.approx(1.0, abs=1e-6)
+
+
+# ── #27: padding 二重計上 → text clip 防止 ────────────────────
+
+
+def test_no_text_overflow_for_japanese_body(one_slide_prs):
+    """3 枚カード × 日本語 80 字 body / 幅 3" で、実描画された body textbox が
+    ``estimate_text_height`` ベースで overflow しない (#27 回帰防止).
+
+    ``check_text_overflow`` は font-size を run 単位で読むため、python-pptx
+    において paragraph-level の font 設定が run に反映されない既知の挙動
+    (本 PR のスコープ外) に引きずられる。そのため本テストでは
+    ``check_text_overflow`` の出力にそのまま依存せず、実描画された body
+    textbox の ``width × height`` と実際の body font size
+    (``CardSpec.body_size_pt``) で ``estimate_text_height`` を再計算し、
+    必要高 ≤ frame 高 × tolerance となっていることを直接検証する。
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    from pptx_mcp_server.engine.text_metrics import estimate_text_height
+
+    slide = one_slide_prs.slides[0]
+    # 日本語 80 文字
+    body = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんがぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽ"[:80]
+    body_pt = 10.0
+    cards = [
+        CardSpec(title=f"カード{i}", body=body, body_size_pt=body_pt)
+        for i in range(3)
+    ]
+    # 3 枚 × 3" + gap 0.2" × 2 = 9.4"
+    add_responsive_card_row(
+        slide, cards,
+        left=0.5, top=0.5, width=9.4, max_height=4.0,
+        gap=0.2, height_mode="max", min_card_height=1.0,
+    )
+
+    # TEXT_BOX は各カードごとに (label なし、) title → body の順に追加される。
+    # 3 カード × 2 ブロック = 6 個。奇数 index が body。
+    text_shapes = [
+        s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.TEXT_BOX
+    ]
+    assert len(text_shapes) == 6
+    body_shapes = text_shapes[1::2]
+
+    for bs in body_shapes:
+        frame_w = bs.width / 914400
+        frame_h = bs.height / 914400
+        # validator と同じく左右 0.05" マージン合計 (0.10") を usable_width から引く
+        usable = max(0.1, frame_w - 0.10)
+        needed = estimate_text_height(body, usable, body_pt)
+        # 5% tolerance (validator と同じ)
+        assert needed <= frame_h * 1.05 + 1e-6, (
+            f"body overflow: needed {needed:.3f}\" > frame {frame_h:.3f}\" × 1.05 "
+            f"(width {frame_w:.3f}\", font {body_pt}pt)"
+        )
+
+
+def test_estimate_not_under_observed_body_height(slide):
+    """``_estimate_block_heights`` の body 推定高が、実描画後の body textbox
+    高さを下回らないこと (allocate >= observed、非過小評価)."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    # 日本語 ~60 字で 3" 幅のカード
+    body = "これはカードの本文テキストで、日本語の折り返しが発生するだけの長さを持つサンプル文字列である。" * 1
+    card = CardSpec(title="見出し", body=body)
+
+    # 行幅 3" = 単一カード
+    placements, _ = add_responsive_card_row(
+        slide, [card],
+        left=0.5, top=0.5, width=3.0, max_height=5.0,
+        gap=0.2, height_mode="content", min_card_height=0.2,
+    )
+    placement_w = placements[0].width
+
+    # 推定 body 高
+    _, _, body_h_est, _ = _estimate_block_heights(card, placement_w)
+
+    # 実描画された body textbox の高さを取得 (最後の TEXT_BOX が body)
+    text_shapes = [
+        s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.TEXT_BOX
+    ]
+    body_shape = text_shapes[-1]
+    observed_body_h = _in(body_shape.height)
+
+    # 推定 ≥ 観測 (過小評価しない)。小さなトレランスを許容する。
+    assert body_h_est + 1e-3 >= observed_body_h or observed_body_h - body_h_est < 0.02
+
+
+# ── MCP tool boundary (#26 B) ─────────────────────────────────
+
+
+def test_mcp_tool_rejects_unknown_height_mode(pptx_file):
+    """``pptx_add_responsive_card_row`` MCP ツール側でも ``height_mode='auto'``
+    は既存 invalid-param エラー形式で弾かれる (#26 Problem B、境界側)."""
+    from pptx_mcp_server.server import pptx_add_responsive_card_row
+
+    cards_json = json.dumps([{"title": "A", "body": "a"}])
+    out = pptx_add_responsive_card_row(
+        file_path=pptx_file,
+        slide_index=0,
+        cards_json=cards_json,
+        left=0.5,
+        top=0.5,
+        width=10.0,
+        max_height=3.0,
+        gap=0.2,
+        height_mode="auto",
+        min_card_height=1.0,
+    )
+    # _err フォーマットに INVALID_PARAMETER が含まれる
+    assert "INVALID_PARAMETER" in out or "height_mode" in out
+
+
+def test_card_placement_dataclass_shape():
+    """``CardPlacement`` は left/top/width/height の 4 フィールドを持つ."""
+    p = CardPlacement(left=1.0, top=2.0, width=3.0, height=4.0)
+    assert (p.left, p.top, p.width, p.height) == (1.0, 2.0, 3.0, 4.0)

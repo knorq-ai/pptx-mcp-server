@@ -99,6 +99,7 @@ from .composites import (
 from .cards import (
     CardSpec,
     CardHeightMode,
+    CardPlacement,
     add_responsive_card_row,
 )
 
@@ -134,7 +135,7 @@ __all__ = [
     # Flex
     "FlexItem", "add_flex_container", "add_flex_container_file",
     # Cards
-    "CardSpec", "CardHeightMode", "add_responsive_card_row",
+    "CardSpec", "CardHeightMode", "CardPlacement", "add_responsive_card_row",
     # Rendering
     "render_slide", "render_slide_to_path",
 ]

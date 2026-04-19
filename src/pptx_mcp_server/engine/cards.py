@@ -8,10 +8,14 @@
 
 # 設計メモ
 - 各カードの幅 ``width`` は ``(row_width - gap*(n-1)) / n`` で一意に決まる。
-  計算結果は呼び出し元で再利用できるよう ``CardSpec.width`` に書き戻す
-  (入力 dataclass を破壊的に変更する)。
+  計算結果は **呼び出し元の ``CardSpec`` には書き戻さない** (dataclass を
+  破壊的に変更しない)。同じ ``CardSpec`` リストを複数行で再利用する呼び出し
+  側が安心して使えるよう、内部の ``_CardLayout`` として保持する。
 - 高さ推定は ``estimate_text_height`` を使う。label は単一行想定のため
   ``label_size_pt * 0.0139`` をそのまま採用する。
+- 高さ推定で使う usable width は ``add_auto_fit_textbox`` と同じ
+  ``inner_w - 2 * _AUTO_FIT_PADDING_PER_SIDE`` を使う (二重 padding 防止)。
+- 残差吸収のため推定ブロック高に ``_BLOCK_HEIGHT_SLACK`` (= 1.05) を掛ける。
 - 各最終高は ``[min_card_height, max_height]`` で clamp する。
 - 単一カード (n == 1) のとき ``gap`` は無視する。
 """
@@ -21,10 +25,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .shapes import _add_shape, add_auto_fit_textbox
+from .pptx_io import EngineError, ErrorCode
+from .shapes import _AUTO_FIT_PADDING_PER_SIDE, _add_shape, add_auto_fit_textbox
 from .text_metrics import estimate_text_height
 
 CardHeightMode = Literal["content", "max", "fill"]
+
+# 有効な height_mode 値の集合 (ランタイム検証用)。JSON 入力経由の未知値を
+# ここで弾くため、``Literal`` とは別に明示的に保持する。
+_VALID_HEIGHT_MODES: tuple[str, ...] = ("content", "max", "fill")
 
 
 # 1em inches 換算係数 (text_metrics の _CJK_WIDTH_PER_PT に相当)
@@ -35,6 +44,10 @@ _INTRA_GAP: float = 0.05
 
 # 左アクセントバーの幅 (inches)
 _ACCENT_BAR_W: float = 0.08
+
+# 推定ブロック高に掛ける slack。auto-fit 側の行高倍率や文字幅推定の残差を
+# 吸収し、PowerPoint 実描画でのクリップを避けるためのマージン。
+_BLOCK_HEIGHT_SLACK: float = 1.05
 
 
 @dataclass
@@ -55,8 +68,8 @@ class CardSpec:
         label_size_pt: ラベル font size (pt)。
         label_color: ラベル文字色 (6 桁 hex)。
         padding: カード内側 padding (inches、上下左右共通)。
-        width: 行レイアウトが計算したカード幅 (inches)。呼び出し側で事前に
-            設定する必要はない。``add_responsive_card_row`` が書き込む。
+        width: ``add_responsive_card_row`` では読み書きしない (後方互換のため
+            フィールド自体は残す)。レイアウト幅は行幅から一意に算出される。
     """
 
     title: str = ""
@@ -74,33 +87,67 @@ class CardSpec:
     width: float = 0.0
 
 
-def _estimate_block_heights(card: CardSpec) -> tuple[float, float, float, int]:
+@dataclass
+class CardPlacement:
+    """実際に描画された 1 枚のカードの位置情報 (inches).
+
+    ``add_responsive_card_row`` がカードごとに 1 つ返す。呼び出し側 (MCP
+    ツール層など) がスライド内の下流要素を配置する際に利用する。
+    """
+
+    left: float
+    top: float
+    width: float
+    height: float
+
+
+def _estimate_block_heights(
+    card: CardSpec, width: float
+) -> tuple[float, float, float, int]:
     """カードの label / title / body それぞれの推定高 (inches) と非空ブロック数を返す.
 
     label は単一行想定のため ``label_size_pt * 0.0139`` をそのまま使う。
     title / body は ``estimate_text_height`` により wrap 後の総高を算出する。
+
+    ``add_auto_fit_textbox`` が内部で左右 ``_AUTO_FIT_PADDING_PER_SIDE`` を
+    差し引くため、ここでも同じ usable width を使う (以前は二重 padding で
+    推定 < 実描画となり、PowerPoint でクリップしていた)。また残差吸収のため
+    title / body の推定高に ``_BLOCK_HEIGHT_SLACK`` 倍を掛ける。
     """
-    inner_w = max(card.width - 2 * card.padding, 0.01)
+    inner_w = max(width - 2 * card.padding, 0.01)
+    # add_auto_fit_textbox と同じ usable width で測る
+    usable_inner_w = max(inner_w - 2 * _AUTO_FIT_PADDING_PER_SIDE, 0.01)
 
     label_h = card.label_size_pt * _EM_PER_PT if card.label else 0.0
-    title_h = (
-        estimate_text_height(card.title, inner_w, card.title_size_pt)
+    title_h_raw = (
+        estimate_text_height(card.title, usable_inner_w, card.title_size_pt)
         if card.title
         else 0.0
     )
-    body_h = (
-        estimate_text_height(card.body, inner_w, card.body_size_pt)
+    body_h_raw = (
+        estimate_text_height(card.body, usable_inner_w, card.body_size_pt)
         if card.body
         else 0.0
     )
+
+    # 推定残差を吸収する slack (label は単一行想定なのでそのまま)
+    title_h = title_h_raw * _BLOCK_HEIGHT_SLACK if title_h_raw > 0 else 0.0
+    body_h = body_h_raw * _BLOCK_HEIGHT_SLACK if body_h_raw > 0 else 0.0
 
     n_blocks = sum(1 for h in (label_h, title_h, body_h) if h > 0)
     return label_h, title_h, body_h, n_blocks
 
 
-def _content_height(card: CardSpec) -> float:
-    """カードの content 高 (padding 込み、intra_gap 含む) を返す."""
-    label_h, title_h, body_h, n_blocks = _estimate_block_heights(card)
+def _content_height(card: CardSpec, width: float | None = None) -> float:
+    """カードの content 高 (padding 込み、intra_gap 含む) を返す.
+
+    Args:
+        card: 対象カード。
+        width: カード幅 (inches)。``None`` の場合は ``card.width`` を使う
+            (後方互換のための挙動だが、呼び出し側で明示するのが推奨)。
+    """
+    w = width if width is not None else card.width
+    label_h, title_h, body_h, n_blocks = _estimate_block_heights(card, w)
     if n_blocks == 0:
         return card.padding * 2
     return (
@@ -161,7 +208,7 @@ def _render_card(
     inner_left = left + card.padding
     inner_w = max(w - 2 * card.padding, 0.01)
 
-    label_h, title_h, body_h, n_blocks = _estimate_block_heights(card)
+    label_h, title_h, body_h, n_blocks = _estimate_block_heights(card, w)
 
     # label は常に上端に固定で配置する。
     cursor = top + card.padding
@@ -255,16 +302,18 @@ def add_responsive_card_row(
     gap: float = 0.2,
     height_mode: CardHeightMode = "max",
     min_card_height: float = 1.0,
-) -> float:
+) -> tuple[list[CardPlacement], float]:
     """N 枚のカードを横並びで配置する.
 
     各カードの幅は ``(width - gap * (n - 1)) / n`` で均等分割する
-    (n == 1 のとき ``gap`` は無視される)。計算した幅は入力 ``cards`` の
-    各 ``CardSpec.width`` に書き戻される (dataclass を破壊的に変更する点に注意)。
+    (n == 1 のとき ``gap`` は無視される)。計算した幅は内部で保持するのみで
+    **呼び出し側の ``CardSpec`` には書き戻さない**。同じ ``CardSpec`` リストを
+    複数回の呼び出しで再利用できる。
 
     Args:
         slide: 対象スライドオブジェクト。
-        cards: ``CardSpec`` のリスト。空リストなら何も描画せず 0 を返す。
+        cards: ``CardSpec`` のリスト。空リストなら何も描画せず空の placement と
+            ``0.0`` を返す。
         left, top: 行の左上座標 (inches)。
         width: 行全体の幅 (inches)。
         max_height: 各カードが取り得る最大高 (inches)。``height_mode`` により
@@ -280,42 +329,61 @@ def add_responsive_card_row(
         min_card_height: 全カードの下限高 (inches)。
 
     Returns:
-        行が実際に消費した縦サイズ (inches)。height_mode が ``"content"`` の
-        場合は個別カード高の最大値、それ以外は共通カード高と一致する。
+        ``(placements, consumed_height)`` のタプル。
+
+        - ``placements``: 各カードの ``CardPlacement`` (left/top/width/height)。
+          入力 ``cards`` と同じ順序で、長さも同じ。
+        - ``consumed_height``: 行が実際に消費した縦サイズ (inches)。
+          ``"content"`` モードでは個別カード高の最大値、それ以外は共通カード高
+          と一致する。
+
+    Raises:
+        EngineError: ``height_mode`` が ``"content" | "max" | "fill"`` 以外の
+            値 (例: JSON 入力経由の ``"auto"`` やタイポ) の場合。
     """
+    # height_mode の実行時検証 (JSON 入力経由の未知値を弾く)
+    if height_mode not in _VALID_HEIGHT_MODES:
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            (
+                f"height_mode must be one of {list(_VALID_HEIGHT_MODES)}; "
+                f"got {height_mode!r}"
+            ),
+        )
+
     n = len(cards)
     if n == 0:
-        return 0.0
+        return [], 0.0
 
-    # 各カードの幅を計算して CardSpec.width に書き戻す
+    # 各カードの幅を計算する (呼び出し元の CardSpec には書き戻さない)
     effective_gap = gap if n > 1 else 0.0
     card_w = (width - effective_gap * (n - 1)) / n
-    for card in cards:
-        card.width = card_w
 
     # 各カードの content 高を事前測定する
-    content_heights = [_content_height(card) for card in cards]
+    content_heights = [_content_height(card, card_w) for card in cards]
 
     # height_mode に応じて各カードの最終高を決定する
-    final_heights: list[float] = []
+    final_heights: list[float]
     if height_mode == "content":
-        for ch in content_heights:
-            h = max(min(ch, max_height), min_card_height)
-            final_heights.append(h)
+        final_heights = [
+            max(min(ch, max_height), min_card_height) for ch in content_heights
+        ]
     elif height_mode == "max":
         max_ch = max(content_heights)
         common_h = max(min(max_ch, max_height), min_card_height)
         final_heights = [common_h] * n
-    elif height_mode == "fill":
+    else:  # "fill" — 上の検証で他の値は到達不能
         common_h = max(max_height, min_card_height)
         final_heights = [common_h] * n
-    else:  # 型的にはここには来ないが、防御的分岐
-        final_heights = [min(max(ch, min_card_height), max_height) for ch in content_heights]
 
-    # 各カードを描画
+    # 各カードを描画しつつ placement を組み立てる
+    placements: list[CardPlacement] = []
     x = left
     for card, h in zip(cards, final_heights):
-        _render_card(slide, card, x, top, card.width, h, mode=height_mode)
-        x += card.width + effective_gap
+        _render_card(slide, card, x, top, card_w, h, mode=height_mode)
+        placements.append(
+            CardPlacement(left=x, top=top, width=card_w, height=h)
+        )
+        x += card_w + effective_gap
 
-    return max(final_heights)
+    return placements, max(final_heights)
