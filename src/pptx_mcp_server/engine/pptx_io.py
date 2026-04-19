@@ -5,6 +5,7 @@ PPTX file I/O — open, save, create, error types.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from enum import Enum
 from pptx import Presentation
@@ -38,19 +39,24 @@ def open_pptx(file_path: str) -> Presentation:
         raise EngineError(ErrorCode.INVALID_PPTX, f"Not a valid PPTX file: {file_path} ({e})")
 
 
-def save_pptx(prs: Presentation, file_path: str) -> None:
+def save_pptx(prs: Presentation, file_path: str, fsync: bool = False) -> None:
     """PPTX を原子的に保存する。
 
-    同一ディレクトリに一時ファイルを書き出したあと ``os.replace`` で rename する。
-    ``os.replace`` は POSIX でも Windows でも atomic であり、
-    途中で失敗しても元のファイルは損なわれない。
+    Atomicity (default): os.replace is syscall-atomic on POSIX and Windows
+    within a single filesystem — the old file is preserved if the save raises
+    mid-write.
 
-    注意: 原子性は同一ファイルシステム内でのみ保証されるため、一時ファイルは
-    必ず target と同じディレクトリに作る。クロスマウントでの temp+rename は
-    静かに degrade するため避ける。
+    Durability (fsync=True, opt-in): fsyncs the temp file AND the containing
+    directory entry before returning, so the new file survives power loss on
+    local ext4/xfs/NTFS. Adds one-to-two disk barriers per call — avoid on
+    hot paths. Skipped on Windows for directory fsync (unsupported).
 
-    なお本関数はクラッシュ耐性のみを目的としており、マルチプロセス間の
-    書き込み排他は行わない (単一ライター契約。詳細は CONTRIBUTING.md 参照)。
+    Caveats:
+    - NFS: os.replace atomicity depends on server + client config. Do not
+      rely on fsync for cross-mount durability.
+    - Windows: os.replace raises PermissionError if the target is held open
+      (e.g., the .pptx is open in PowerPoint). Caller should retry or
+      surface a clear error.
     """
     abs_path = os.path.abspath(file_path)
     dir_ = os.path.dirname(abs_path) or "."
@@ -64,7 +70,22 @@ def save_pptx(prs: Presentation, file_path: str) -> None:
     os.close(fd)
     try:
         prs.save(tmp_path)
+        if fsync:
+            # Flush the temp file's contents to disk before swapping it in.
+            tmp_fd = os.open(tmp_path, os.O_RDONLY)
+            try:
+                os.fsync(tmp_fd)
+            finally:
+                os.close(tmp_fd)
         os.replace(tmp_path, abs_path)
+        if fsync and sys.platform != "win32":
+            # fsync the containing directory so the rename itself survives
+            # power loss. Windows does not support directory fsync.
+            dir_fd = os.open(dir_, os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except Exception:
         try:
             os.unlink(tmp_path)
