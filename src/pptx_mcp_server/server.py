@@ -44,6 +44,7 @@ from .engine import (
     add_connector,
     add_callout,
     check_deck_overlaps,
+    check_deck_extended,
 )
 
 INSTRUCTIONS = """
@@ -917,11 +918,25 @@ def pptx_render_slide(
 # --- Entry Point --------------------------------------------------
 
 @mcp.tool()
-def pptx_check_layout(file_path: str) -> str:
-    """Validate slide layouts: detect overlapping shapes and out-of-bounds elements.
+def pptx_check_layout(
+    file_path: str,
+    min_readable_pt: float = 8.0,
+    overflow_tolerance_pct: float = 5.0,
+) -> str:
+    """Validate slide layouts: overlaps, out-of-bounds, text overflow,
+    unreadable font, title/divider collision, inconsistent gaps.
+
+    Returns a JSON string with per-slide findings and a summary block.
     Run after building a deck to catch layout issues before delivery."""
     try:
-        return check_deck_overlaps(file_path)
+        from pptx import Presentation
+        prs = Presentation(file_path)
+        result = check_deck_extended(
+            prs,
+            min_readable_pt=min_readable_pt,
+            overflow_tolerance_pct=overflow_tolerance_pct,
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         return _err(e)
 

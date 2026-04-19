@@ -65,6 +65,12 @@ from .icons import (
 from .validation import (
     check_deck_overlaps,
     check_slide_overlaps,
+    check_deck_extended,
+    check_text_overflow,
+    check_unreadable_text,
+    check_divider_collision,
+    check_inconsistent_gaps,
+    ValidationFinding,
 )
 from .connectors import (
     add_connector,
@@ -108,7 +114,10 @@ __all__ = [
     # Connectors
     "add_connector", "add_callout",
     # Validation
-    "check_deck_overlaps",
+    "check_deck_overlaps", "check_slide_overlaps", "check_deck_extended",
+    "check_text_overflow", "check_unreadable_text",
+    "check_divider_collision", "check_inconsistent_gaps",
+    "ValidationFinding",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",
