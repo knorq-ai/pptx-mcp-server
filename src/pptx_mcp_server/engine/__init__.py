@@ -96,6 +96,11 @@ from .composites import (
     _add_bullet_block,
     _build_slide,
 )
+from .cards import (
+    CardSpec,
+    CardHeightMode,
+    add_responsive_card_row,
+)
 
 __all__ = [
     # I/O
@@ -128,6 +133,8 @@ __all__ = [
     "build_slide", "build_deck",
     # Flex
     "FlexItem", "add_flex_container", "add_flex_container_file",
+    # Cards
+    "CardSpec", "CardHeightMode", "add_responsive_card_row",
     # Rendering
     "render_slide", "render_slide_to_path",
 ]

@@ -46,7 +46,10 @@ from .engine import (
     add_callout,
     check_deck_overlaps,
     check_deck_extended,
+    CardSpec,
+    add_responsive_card_row,
 )
+from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
 INSTRUCTIONS = """
 # pptx-editor — Professional Presentation Builder
@@ -731,6 +734,82 @@ def pptx_add_bullet_block(
         result = add_bullet_block(file_path, slide_index, items_json, left, top, width, height)
         result += _auto_render(file_path, slide_index)
         return result
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_responsive_card_row(
+    file_path: str,
+    slide_index: int,
+    cards_json: str,
+    left: float,
+    top: float,
+    width: float,
+    max_height: float,
+    gap: float = 0.2,
+    height_mode: str = "max",
+    min_card_height: float = 1.0,
+) -> str:
+    """Add a row of variable-height cards that auto-size to content and align to the max content height.
+
+    cards_json: JSON array of card dicts. Each card supports keys: title, body, label,
+    accent_color (hex, "" disables bar), fill_color, title_size_pt, body_size_pt,
+    title_color, body_color, label_size_pt, label_color, padding.
+
+    height_mode:
+      - "content": each card uses its own content height (heights may differ).
+      - "max":     all cards take the max individual content height (bottoms align).
+      - "fill":    all cards fill max_height (short content is centered vertically).
+
+    Returns a JSON object: {"cards": [{"left","top","width","height"}, ...], "consumed_height": float}.
+    Auto-renders a preview PNG.
+    """
+    try:
+        card_dicts = json.loads(cards_json) if isinstance(cards_json, str) else cards_json
+        cards = [CardSpec(**d) for d in card_dicts]
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        consumed = add_responsive_card_row(
+            slide,
+            cards,
+            left=left, top=top, width=width, max_height=max_height,
+            gap=gap,
+            height_mode=height_mode,  # type: ignore[arg-type]
+            min_card_height=min_card_height,
+        )
+        save_pptx(prs, file_path)
+
+        # 各カードの (left, top, width, height) を計算する。行の左端 + 累積幅+ gap。
+        n = len(cards)
+        effective_gap = gap if n > 1 else 0.0
+        placements: list[dict] = []
+        x = left
+        # 実際の各カードの高さを cards と height_mode から再現する
+        from .engine.cards import _content_height  # 内部ヘルパを利用
+
+        if height_mode == "content":
+            heights = [max(min(_content_height(c), max_height), min_card_height) for c in cards]
+        else:
+            heights = [consumed] * n
+
+        for card, h in zip(cards, heights):
+            placements.append({
+                "left": x,
+                "top": top,
+                "width": card.width,
+                "height": h,
+            })
+            x += card.width + effective_gap
+
+        result = {
+            "cards": placements,
+            "consumed_height": consumed,
+        }
+        out = json.dumps(result)
+        out += _auto_render(file_path, slide_index)
+        return out
     except Exception as e:
         return _err(e)
 
