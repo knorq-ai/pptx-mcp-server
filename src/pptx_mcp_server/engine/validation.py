@@ -70,13 +70,21 @@ def _is_small_decorative(shape) -> bool:
 
 
 def _is_container(bounds_a: Tuple, bounds_b: Tuple) -> bool:
-    """一方が他方を完全包含するか (背景矩形内のテキスト配置など)."""
+    """一方が他方を完全包含するか (背景矩形内のテキスト配置など).
+
+    EMU ↔ inches 変換で生じる微小な float ズレ (≈ 1e-16 inches) で
+    containment が false になるケースがあったため、1e-6 inches の tolerance
+    (約 1 micron、EMU 単位でも 1 未満) を許容する。
+    """
     a_left, a_top, a_right, a_bottom = bounds_a
     b_left, b_top, b_right, b_bottom = bounds_b
+    tol = 1e-6
 
-    if a_left <= b_left and a_top <= b_top and a_right >= b_right and a_bottom >= b_bottom:
+    if (a_left - tol) <= b_left and (a_top - tol) <= b_top \
+            and (a_right + tol) >= b_right and (a_bottom + tol) >= b_bottom:
         return True
-    if b_left <= a_left and b_top <= a_top and b_right >= a_right and b_bottom >= a_bottom:
+    if (b_left - tol) <= a_left and (b_top - tol) <= a_top \
+            and (b_right + tol) >= a_right and (b_bottom + tol) >= a_bottom:
         return True
     return False
 
