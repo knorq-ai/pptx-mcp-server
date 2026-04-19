@@ -48,6 +48,27 @@ case it.
 - Run the full suite (`python -m pytest`) before committing. Baseline is 440+
   tests and is kept green on `main`.
 
+## Calibration
+
+The `text_metrics` width heuristic is calibrated for Arial (ASCII) and CJK
+full-width. `tests/test_calibration.py` measures real font advance widths via
+fontTools and guards against order-of-magnitude calibration errors. These
+tests skip when no compatible TTF is available locally. The `calibration`
+CI job runs them against Liberation Sans + Noto Sans CJK on Ubuntu. To run
+locally on macOS, system Arial + Hiragino Sans are auto-detected. On Ubuntu:
+
+```bash
+sudo apt install fonts-liberation fonts-noto-cjk
+python -m pytest tests/test_calibration.py -v
+```
+
+Tolerance bands are deliberately loose (±35% per ASCII char, ±25% ASCII
+mixed string, ±20% CJK char, ±15% CJK mixed string): the heuristic is a
+±10-15% model, and the calibration suite exists to catch order-of-magnitude
+miscalibrations, not hide them behind tight bands. If you change a width
+constant, re-run locally and update bands only if they reflect a genuine
+improvement; do NOT loosen bands to paper over a new miscalibration.
+
 ## Engine / MCP boundary
 
 `src/pptx_mcp_server/engine/*.py` MUST NOT import `mcp`. Library consumers

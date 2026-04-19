@@ -34,3 +34,17 @@ jobs:
           python -c "from pptx_mcp_server.engine.text_metrics import estimate_text_width; print('text_metrics ok')"
       - name: Verify AST guardrail
         run: python -m pytest tests/test_library_usage.py tests/test_packaging_extras.py -v
+
+  calibration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-liberation fonts-noto-cjk
+      - run: pip install -e ".[mcp,test]"
+      - run: python -m pytest tests/test_calibration.py -v
