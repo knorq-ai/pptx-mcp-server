@@ -125,13 +125,37 @@ class TestWrapText:
         assert result[1] == ""
         assert result[2] == "b"
 
-    def test_long_word_placed_on_own_line(self) -> None:
-        # max_width より長い ASCII ワードも単独行として配置される (無限ループしない)
+    def test_long_word_char_broken_across_lines(self) -> None:
+        # max_width を超える ASCII ワードは文字単位で強制分割される (issue #31)。
+        # 通常長の単語を不必要に分割しないが、過大トークンは複数行に展開される。
         long_word = "supercalifragilisticexpialidocious"
         result = wrap_text(long_word, 0.5, 12)
-        # 少なくとも 1 行にそのまま置かれる
-        assert any(long_word in line for line in result)
-        assert len(result) >= 1
+        # 文字単位折り返しなので 1 行には収まらない
+        assert len(result) >= 2
+        # 元の文字列を復元できる (情報欠損なし)
+        assert "".join(result) == long_word
+        # どの行も max_width 内に収まる
+        for line in result:
+            assert estimate_text_width(line, 12) <= 0.5 + 1e-9
+
+    def test_long_url_breaks_into_multiple_lines(self) -> None:
+        # URL のようにスペースを含まない長い ASCII 文字列も折り返される (issue #31)。
+        url = "https://example.com/very/long/path/that/wont/fit/on/one/line"
+        result = wrap_text(url, 1.0, 10)
+        assert len(result) >= 2
+        assert "".join(result) == url
+
+    def test_long_token_neighbors_preserved(self) -> None:
+        # 長大トークンは文字分割されるが、隣接する短い単語は分割されない。
+        result = wrap_text("foo bar baz_verylongwordthatexceedswidth morestuff", 1.0, 10)
+        # 短い単語は原形保持されている
+        joined = " ".join(result)
+        assert "foo" in joined
+        assert "bar" in joined
+        assert "morestuff" in joined
+        # 長大トークン自体は 1 行には収まっていない (複数行へ展開)
+        long_tok = "baz_verylongwordthatexceedswidth"
+        assert not any(long_tok in line for line in result)
 
     def test_ascii_word_wrap_at_space(self) -> None:
         # "Hello World Foo Bar Baz" を狭めの幅で折り返す → 空白で分割される
@@ -145,6 +169,26 @@ class TestWrapText:
         # 十分に広ければ 1 行で収まる
         result = wrap_text("Hello", 10.0, 12)
         assert result == ["Hello"]
+
+    def test_short_words_not_split(self) -> None:
+        # リグレッション: 普通の単語は decent な max_width で分割されない。
+        result = wrap_text("Hello World", 5.0, 12)
+        assert result == ["Hello World"]
+
+    def test_cjk_char_break_regression(self) -> None:
+        # リグレッション: 長い CJK 連続列も従来通り文字単位で折り返される。
+        # CJK は _tokenize で 1 文字 1 トークン化される既存仕様により機能する。
+        cjk = "あ" * 50
+        result = wrap_text(cjk, 1.0, 10)
+        assert len(result) >= 2
+        assert "".join(result) == cjk
+
+    def test_token_exactly_max_width_single_line(self) -> None:
+        # トークン幅がちょうど max_width のときは 1 行に収まり、強制分割されない。
+        token = "abcdef"  # 6 chars * 12pt * 0.0083 = 0.5976 inches
+        width = estimate_text_width(token, 12)
+        result = wrap_text(token, width, 12)
+        assert result == [token]
 
 
 class TestEstimateTextHeight:
@@ -170,3 +214,10 @@ class TestEstimateTextHeight:
         h_double = estimate_text_height("Hello", 10.0, 12, line_height_factor=2.4)
         # line_height_factor 2.4 は 1.2 の 2 倍
         assert h_double == pytest.approx(h_default * 2, abs=0.001)
+
+    def test_long_ascii_token_reports_multi_line_height(self) -> None:
+        # Issue #31: 長大な ASCII トークンも複数行に展開され、高さが正しく推定される。
+        # 旧バグでは 1 行扱いとなり ~0.18" が返っていた。
+        height = estimate_text_height("x" * 1000, 2.0, 10)
+        # max_width=2.0" 内での char-break なので最低 2" 以上 (実際は数 inches)
+        assert height >= 2.0

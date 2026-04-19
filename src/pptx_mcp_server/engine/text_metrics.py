@@ -107,7 +107,8 @@ def wrap_text(
     - 混在時は文字単位で現在行幅を追跡し、ASCII 部では直近の空白位置で折り
       返せる場合はそこで折り返す。
     - 単一の ASCII ワードが ``max_width_inches`` を超える場合は、そのワード
-      を単独行として配置する (無限ループ回避)。
+      のみ文字単位で強制分割する (URL/ハッシュタグ/長大 ASCII 対策)。
+      通常長の単語については従来通り途中では切らない。
     - 入力内の ``\\n`` は強制改行として扱う。
     """
     if not text:
@@ -136,8 +137,9 @@ def _wrap_segment(
     - テキストを「トークン」に分割する。CJK 文字とスペースはそれぞれ単独トークン。
       連続する ASCII (非 CJK・非空白) 文字は 1 ワードとして 1 トークン化する。
     - トークン単位で現在行に詰め、max_width を超える直前で改行する。
-    - ASCII ワードが単独で max_width を超える場合でも、そのワードをそのまま
-      1 行として配置し、途中で切らない (仕様)。
+    - ASCII ワード単体で max_width を超える場合は、そのトークンのみ文字単位で
+      強制分割する (URL / 長い識別子 / ハッシュタグ等が 1 行扱いされて高さが
+      過小評価される問題への対策)。他のトークンに対する語中分割は行わない。
     """
     tokens: list[str] = _tokenize(text)
 
@@ -145,8 +147,37 @@ def _wrap_segment(
     current: str = ""
     current_width: float = 0.0
 
+    def flush() -> None:
+        nonlocal current, current_width
+        lines.append(current.rstrip(" "))
+        current = ""
+        current_width = 0.0
+
     for tok in tokens:
         tok_width = _measure(tok, size_pt, font)
+
+        # ASCII ワード単体が max_width を超える場合は文字単位で分割する。
+        # CJK 1 文字・スペース・max_width 内に収まる通常ワードはこの経路に入らない。
+        if (
+            len(tok) > 1
+            and not is_cjk(tok[0])
+            and tok != " "
+            and tok_width > max_width_inches
+        ):
+            for ch in tok:
+                ch_width = _measure(ch, size_pt, font)
+                if current == "":
+                    current = ch
+                    current_width = ch_width
+                elif current_width + ch_width <= max_width_inches:
+                    current += ch
+                    current_width += ch_width
+                else:
+                    flush()
+                    current = ch
+                    current_width = ch_width
+            continue
+
         if current == "":
             # 行頭: 空白トークンは無視する (行頭空白は詰める)
             if tok == " ":
@@ -161,13 +192,11 @@ def _wrap_segment(
         else:
             # 行を確定して新しい行を始める
             # 末尾の空白は trim
-            lines.append(current.rstrip(" "))
+            flush()
             if tok == " ":
-                current = ""
-                current_width = 0.0
-            else:
-                current = tok
-                current_width = tok_width
+                continue
+            current = tok
+            current_width = tok_width
 
     if current != "":
         lines.append(current.rstrip(" "))
