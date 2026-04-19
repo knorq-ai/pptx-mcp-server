@@ -70,6 +70,72 @@ def _item_base_main_size(item: FlexItem) -> float:
     return 0.0
 
 
+def _validate_items(items: list[FlexItem]) -> None:
+    """各 ``FlexItem`` の宣言値を配置計算前に検証する.
+
+    #72: ``min_size > max_size`` のような論理的に不可能な制約や、
+    負のサイズ指定はサイレントに不正な配置を生む。``_distribute_grow``
+    は min-clamp を先に適用するため、``min_size=7, max_size=5`` の
+    項目に ``7`` を割り当て ``max_size`` を逸脱する。#59・#65 と
+    同類の失敗モードであるが、検出次元が「予算」ではなく「項目内
+    制約」である点が異なる。エントリポイントでまとめて拒否するこ
+    とで、``_distribute_grow`` 側を単純に保つ.
+
+    Raises:
+        EngineError: 項目のいずれかが下記条件に該当するとき
+            (``INVALID_PARAMETER``)。
+            - ``min_size`` または ``max_size`` が負
+            - ``min_size > max_size``
+            - ``sizing == "fixed"`` かつ ``size`` が負
+            - ``sizing == "grow"`` かつ ``grow`` が負
+            - ``sizing == "content"`` かつ ``content_size`` が負
+    """
+    for i, item in enumerate(items):
+        if item.min_size < 0:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"items[{i}]: min_size={item.min_size:.2f} must be >= 0.",
+            )
+        if item.max_size < 0:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"items[{i}]: max_size={item.max_size:.2f} must be >= 0.",
+            )
+        if item.min_size > item.max_size:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                (
+                    f"items[{i}]: min_size={item.min_size:.2f} > "
+                    f"max_size={item.max_size:.2f}. "
+                    "Declared constraints are impossible."
+                ),
+            )
+        if item.sizing == "fixed" and item.size < 0:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                (
+                    f"items[{i}]: sizing='fixed' requires size >= 0; "
+                    f"got {item.size:.2f}."
+                ),
+            )
+        if item.sizing == "grow" and item.grow < 0:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                (
+                    f"items[{i}]: sizing='grow' requires grow >= 0; "
+                    f"got {item.grow:.2f}."
+                ),
+            )
+        if item.sizing == "content" and item.content_size < 0:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                (
+                    f"items[{i}]: sizing='content' requires content_size >= 0; "
+                    f"got {item.content_size:.2f}."
+                ),
+            )
+
+
 def _distribute_grow(
     items: list[FlexItem],
     indices: list[int],
@@ -164,9 +230,10 @@ def add_flex_container(
     Raises:
         EngineError: ``align`` が ``"stretch"`` 以外のとき
             (``INVALID_PARAMETER``)、fixed+content の合計が usable_main を
-            超過しているとき、または grow 項目の ``min_size`` 合計が残余
+            超過しているとき、grow 項目の ``min_size`` 合計が残余
             予算 (usable_main - fixed_total - content_total) を超過して
-            いるとき (#59)。
+            いるとき (#59)、または項目単体の宣言値が矛盾 / 負値の
+            とき (#72)。
     """
     # #24: MVP 実装は cross 軸の intrinsic サイズを測定しないため、``center``・
     # ``start``・``end`` を本来の意味で実装できない。従来はサイレントに
@@ -177,6 +244,12 @@ def add_flex_container(
             ErrorCode.INVALID_PARAMETER,
             f"align={align!r} is not yet implemented; use 'stretch' for MVP.",
         )
+
+    # #72: 分配ロジックに入る前に各項目の宣言値を検証する。
+    # ``_distribute_grow`` は min-clamp を先に適用するため、``min_size >
+    # max_size`` を受け入れると ``max_size`` を逸脱する割当になる。エントリ
+    # ポイントでまとめて拒否し、内部ループは単純に保つ.
+    _validate_items(items)
 
     if not items:
         return []
