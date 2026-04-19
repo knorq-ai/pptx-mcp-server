@@ -378,3 +378,62 @@ class TestFlexContainerItemsJson:
             left=0.5, top=0.5, width=10.0, height=1.0,
         )
         assert "INVALID_PARAMETER" in result
+
+
+# ── #43: CardSpec JSON strict unknown-key validation ───────────────
+
+class TestResponsiveCardRowStrictKeys:
+    """``pptx_add_responsive_card_row`` が未知キーを弾く (#43)."""
+
+    def test_unknown_key_rejected_with_index_and_name(self, deck):
+        """``typo`` など CardSpec に無いキーは INVALID_PARAMETER。
+        エラーメッセージにインデックスとキー名が含まれる。"""
+        cards_json = json.dumps([{"title": "t", "body": "b", "typo": "x"}])
+        result = pptx_add_responsive_card_row(
+            file_path=deck,
+            slide_index=0,
+            cards_json=cards_json,
+            left=0.5, top=0.5, width=10.0, max_height=3.0,
+        )
+        assert "INVALID_PARAMETER" in result
+        assert "typo" in result
+        # どのカードが原因かを示すため、index プレフィックスも含む
+        assert "card[0]" in result
+
+    def test_unknown_key_index_points_to_bad_card(self, deck):
+        """不良カードが配列の途中にある場合、index が正しく反映される。"""
+        cards_json = json.dumps(
+            [
+                {"title": "ok", "body": "ok"},
+                {"title": "bad", "body": "b", "oops": 1},
+            ]
+        )
+        result = pptx_add_responsive_card_row(
+            file_path=deck,
+            slide_index=0,
+            cards_json=cards_json,
+            left=0.5, top=0.5, width=10.0, max_height=3.0,
+        )
+        assert "INVALID_PARAMETER" in result
+        assert "card[1]" in result
+        assert "oops" in result
+
+    def test_valid_cards_ok_regression(self, deck):
+        """既知キーのみのカードは従来どおり成功する (回帰防止)。"""
+        cards_json = json.dumps(
+            [
+                {"title": "A", "body": "aa", "accent_color": "2251FF"},
+                {"title": "B", "body": "bb", "padding": 0.25},
+            ]
+        )
+        result = pptx_add_responsive_card_row(
+            file_path=deck,
+            slide_index=0,
+            cards_json=cards_json,
+            left=0.5, top=0.5, width=10.0, max_height=3.0,
+        )
+        # 先頭行は成功時の JSON
+        first_line = result.split("\n")[0]
+        parsed = json.loads(first_line)
+        assert "cards" in parsed
+        assert len(parsed["cards"]) == 2
