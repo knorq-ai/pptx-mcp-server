@@ -27,8 +27,16 @@ source of truth.
 | MCP tool | `pptx_verb_noun` | `pptx_add_textbox` |
 | File-based wrapper | `verb_noun_file` | `add_textbox_file` |
 | In-memory primitive | `verb_noun` (no suffix) | `add_textbox` |
-| JSON input via MCP | `_json` suffix on the arg | `items_json` |
+| Structured MCP input | native typed arg (`list[dict]`, `dict`, etc.) | `items: list[dict]`, `spec: dict` |
 | Font size argument | `_pt` suffix | `font_size_pt` |
+
+> **v0.3.0 convention change (#97).** The `_json` suffix convention was
+> retired: MCP tools now take native `list` / `dict` arguments and let
+> FastMCP generate JSON Schema from the Python type annotation. Pre-v0.3.0
+> tools used JSON-stringified params (`items_json: str` → runtime
+> `json.loads`) which forced every caller to double-encode and hid type
+> errors behind `INTERNAL_ERROR: JSONDecodeError`. Do not add new
+> `*_json: str` params.
 | Colors | 6-hex, no `#` | `"051C2C"` |
 | Coordinates / dimensions | inches (float) | `left=1.0, width=10.0` |
 

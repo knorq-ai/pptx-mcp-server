@@ -2,38 +2,44 @@
 """
 pptx-mcp-server -- MCP server for PPTX presentation editing.
 
-Parameter conventions (new tools):
-- ``*_json``: JSON-stringified array/object input (例: ``rows_json``, ``kpis_json``,
-  ``cards_json``, ``items_json``). 生の Python list/dict ではなく必ず JSON 文字列で渡す。
+Parameter conventions (v0.3.0):
+- Structured parameters pass native Python types (``list[dict]``, ``dict``,
+  ``list[list[Any]]``) — FastMCP validates them from Python type annotations.
+  ``*_json: str`` が付いていた legacy API は v0.3.0 で撤廃された (#97)。
 - ``*_pt``: フォントサイズなど「ポイント単位」を明示する (例: ``font_size_pt``,
   ``min_size_pt``)。旧 tool の素の ``font_size`` は後方互換のため温存する。
 - ``colors``: ``"#"`` を含まない 6 桁 hex (例: ``"2251FF"``)。
 - coordinates: inches (float)。
 
-Response shape (v0.2.0; BREAKING change — see issue #88):
+Response shape (v0.3.0; BREAKING change — see issues #98, #99):
 
 All tool calls return a JSON string. Success payloads are wrapped as::
 
-    {"ok": true, "result": <legacy return value>}
+    {"ok": true, "result": {"message": "...", ...extra fields}}
+
+``result`` は **常に dict** であり, 最低限 ``message`` キーを持つ (#98)。
+auto-render が enabled の場合は ``preview_path`` が付与され, failure/timeout の
+場合は ``render_warning`` が付与される (shape は一貫して dict のまま)。
+``pptx_check_layout(detailed=True)`` は ``slides`` / ``summary`` を持つ
+dict をそのまま埋め込む — 呼び出し側は単 json.loads で decode 完了する (#99)。
 
 Error payloads are structured as::
 
     {"ok": false, "error": {
         "code": "INVALID_PARAMETER",
-        "parameter": "items_json",   // optional
+        "parameter": "items",         // optional
         "message": "...",
         "hint": "...",                // optional
         "issue": 35                    // optional GitHub issue reference
     }}
 
-Consumers should ``json.loads`` the response and branch on the ``ok`` field.
-The ``error.code`` field mirrors ``EngineError.code`` enum values
+``error.code`` field mirrors ``EngineError.code`` enum values
 (``INVALID_PARAMETER``, ``FILE_NOT_FOUND``, ``SLIDE_NOT_FOUND``, etc.).
 
-Auto-render (v0.2.0; BREAKING change — see issue #86):
+Auto-render (v0.2.0+):
 
 Composite / batch-build tools previously invoked LibreOffice for a PNG preview
-after every successful edit. This is now **opt-in** via the
+after every successful edit. This is **opt-in** via the
 ``PPTX_MCP_AUTO_RENDER=1`` environment variable, with a hard timeout controlled
 by ``PPTX_MCP_RENDER_TIMEOUT`` (default 10 seconds). If rendering times out
 or fails, the primary tool still succeeds — the render outcome is surfaced as
@@ -42,7 +48,7 @@ a ``render_warning`` field in the result payload.
 
 import json
 from dataclasses import fields
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Union
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -109,15 +115,16 @@ INSTRUCTIONS = """
 Neutral capability provider. Does not prescribe UX (confirmations, theme
 choice, etc.) — that belongs in the calling agent's system prompt.
 
-## Parameter Conventions
+## Parameter Conventions (v0.3.0)
+- Structured params use native Python types (`list[dict]`, `dict`,
+  `list[list[Any]]`). The legacy `*_json: str` forms were removed in #97.
 - `colors`: 6-hex without `#` (e.g., `"2251FF"`).
 - coordinates / sizes: inches (float).
 - `*_pt`: point-unit sizes (e.g., `font_size_pt`, `min_size_pt`).
-- `*_json`: JSON-stringified arrays/objects (pass as string).
 
 ## Workflow
 - `pptx_create` — new 16:9 PPTX.
-- `pptx_build_deck` — build an ENTIRE deck from JSON spec (preferred).
+- `pptx_build_deck` — build an ENTIRE deck from a list of slide specs (preferred).
 - `pptx_build_slide` — add single slides.
 - Primitive tools (`pptx_edit_text`, `pptx_format_shape`, …) for fine edits.
 - `pptx_check_layout` catches overlaps / overflow after building.
@@ -128,11 +135,18 @@ Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
 Available: `mckinsey` (default), `deloitte`, `neutral`. For custom palettes
 pass explicit `font_color` / `fill_color` hex values on elements instead.
 
-## Response Shape
-All tools return a JSON string. Parse with `json.loads`:
-- Success: `{"ok": true, "result": ...}`
+## Response Shape (v0.3.0)
+All tools return a JSON string. Parse with `json.loads`. `result` is ALWAYS
+a dict (never a raw string, never a nested-JSON-encoded string).
+
+- Success: `{"ok": true, "result": {"message": "...", ...extra}}`
 - Error:   `{"ok": false, "error": {"code": "INVALID_PARAMETER",
-            "parameter": "items_json", "message": "...", "hint": "..."}}`
+            "parameter": "items", "message": "...", "hint": "..."}}`
+
+Composite tools add optional keys to `result` without breaking the dict
+shape — `preview_path` on successful auto-render, `render_warning` on
+timeout/failure. `pptx_check_layout(detailed=True)` embeds its `slides` /
+`summary` findings directly into `result` (single-decode, #99).
 
 `error.code` mirrors `EngineError.code`: `INVALID_PARAMETER`, `FILE_NOT_FOUND`,
 `SLIDE_NOT_FOUND`, `SHAPE_NOT_FOUND`, `INDEX_OUT_OF_RANGE`, `INVALID_PPTX`,
@@ -175,7 +189,7 @@ def pptx_create(
 ) -> str:
     """Create a new blank PPTX file. Default is 16:9 widescreen."""
     try:
-        return _success(create_presentation(file_path, width_inches, height_inches))
+        return _success({"message": create_presentation(file_path, width_inches, height_inches)})
     except Exception as e:
         return _err(e)
 
@@ -184,7 +198,7 @@ def pptx_create(
 def pptx_get_info(file_path: str) -> str:
     """Get presentation overview: slide count, dimensions, shape summaries."""
     try:
-        return _success(get_presentation_info(file_path))
+        return _success({"message": get_presentation_info(file_path)})
     except Exception as e:
         return _err(e)
 
@@ -193,7 +207,7 @@ def pptx_get_info(file_path: str) -> str:
 def pptx_read_slide(file_path: str, slide_index: int) -> str:
     """Read detailed content of a slide -- all shapes, text, tables."""
     try:
-        return _success(read_slide(file_path, slide_index))
+        return _success({"message": read_slide(file_path, slide_index)})
     except Exception as e:
         return _err(e)
 
@@ -202,7 +216,7 @@ def pptx_read_slide(file_path: str, slide_index: int) -> str:
 def pptx_list_shapes(file_path: str, slide_index: int) -> str:
     """List all shapes on a slide with indices, types, positions, text preview."""
     try:
-        return _success(list_shapes(file_path, slide_index))
+        return _success({"message": list_shapes(file_path, slide_index)})
     except Exception as e:
         return _err(e)
 
@@ -213,7 +227,7 @@ def pptx_list_shapes(file_path: str, slide_index: int) -> str:
 def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
     """Add a new slide. Layout 6 = Blank (most common)."""
     try:
-        return _success(add_slide(file_path, layout_index))
+        return _success({"message": add_slide(file_path, layout_index)})
     except Exception as e:
         return _err(e)
 
@@ -222,7 +236,7 @@ def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
 def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
     """Move a slide from one position to another. 0-based indices."""
     try:
-        return _success(move_slide(file_path, from_index, to_index))
+        return _success({"message": move_slide(file_path, from_index, to_index)})
     except Exception as e:
         return _err(e)
 
@@ -231,7 +245,7 @@ def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
 def pptx_delete_slide(file_path: str, slide_index: int) -> str:
     """Delete a slide by 0-based index."""
     try:
-        return _success(delete_slide(file_path, slide_index))
+        return _success({"message": delete_slide(file_path, slide_index)})
     except Exception as e:
         return _err(e)
 
@@ -240,7 +254,7 @@ def pptx_delete_slide(file_path: str, slide_index: int) -> str:
 def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
     """Duplicate a slide (appended at end)."""
     try:
-        return _success(duplicate_slide(file_path, slide_index))
+        return _success({"message": duplicate_slide(file_path, slide_index)})
     except Exception as e:
         return _err(e)
 
@@ -249,7 +263,7 @@ def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
 def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> str:
     """Set solid background color for a slide. Color as hex e.g. '051C2C' (without #)."""
     try:
-        return _success(set_slide_background(file_path, slide_index, color))
+        return _success({"message": set_slide_background(file_path, slide_index, color)})
     except Exception as e:
         return _err(e)
 
@@ -258,7 +272,7 @@ def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> s
 def pptx_set_dimensions(file_path: str, width: float, height: float) -> str:
     """Set presentation slide dimensions in inches (applies to all slides)."""
     try:
-        return _success(set_slide_dimensions(file_path, width, height))
+        return _success({"message": set_slide_dimensions(file_path, width, height)})
     except Exception as e:
         return _err(e)
 
@@ -287,11 +301,11 @@ def pptx_add_textbox(
 ) -> str:
     """Add a text box to a slide. Position and size in inches. Alignment: left/center/right. Vertical anchor: top/middle/bottom."""
     try:
-        return _success(add_textbox(
+        return _success({"message": add_textbox(
             file_path, slide_index, left, top, width, height, text,
             font_name, font_size, font_color, bold, italic,
             alignment, vertical_anchor, word_wrap, line_spacing, underline,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -314,7 +328,7 @@ def pptx_add_auto_fit_textbox(
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
 ) -> str:
-    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. Returns a JSON object with shape_index, shape_name, and actual_font_size."""
+    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. Returns a dict with shape_index, shape_name, and actual_font_size."""
     try:
         result = add_auto_fit_textbox_file(
             file_path, slide_index, text, left, top, width, height,
@@ -327,6 +341,7 @@ def pptx_add_auto_fit_textbox(
             vertical_anchor=vertical_anchor,
             truncate_with_ellipsis=truncate_with_ellipsis,
         )
+        # engine returns a dict {shape_index, shape_name, actual_font_size, ...}
         return _success(result)
     except Exception as e:
         return _err(e)
@@ -336,7 +351,7 @@ def pptx_add_auto_fit_textbox(
 def pptx_add_flex_container(
     file_path: str,
     slide_index: int,
-    items_json: str,
+    items: List[Dict[str, Any]],
     left: float,
     top: float,
     width: float,
@@ -348,8 +363,8 @@ def pptx_add_flex_container(
 ) -> str:
     """Add a CSS-flexbox-style container that lays out child items along a main axis.
 
-    ``items_json`` は JSON-stringified array (``*_json`` 命名規約に沿う)。各要素 dict
-    のキーは以下:
+    ``items`` は Python list of dict (v0.3.0 で ``items_json: str`` から変更, #97)。
+    各要素 dict のキーは以下:
       - `sizing`: "fixed" | "grow" | "content"
       - `type`: "text" | "rectangle"
       - `size` (for fixed), `grow` (for grow, default 1), `content_size` (for content)
@@ -361,38 +376,18 @@ def pptx_add_flex_container(
     align cross-axis: "stretch" のみ現状サポート。"start" / "center" / "end" は
     `INVALID_PARAMETER` を返す (将来対応予定; #24 参照)。
 
-    例: ``items_json='[{"sizing":"fixed","size":2,"type":"rectangle"}]'``
+    例: ``items=[{"sizing":"fixed","size":2,"type":"rectangle"}]``
 
-    Returns JSON with allocations (per-item [left, top, width, height]) and shape identifiers created.
+    Returns a dict with allocations (per-item [left, top, width, height]) and shape identifiers created.
     """
     try:
-        if not isinstance(items_json, str):
-            return _error(
-                "INVALID_PARAMETER",
-                "items_json must be a JSON string, not a raw Python list.",
-                parameter="items_json",
-                hint=(
-                    "Pass a JSON-stringified array, e.g., "
-                    "'[{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}]'."
-                ),
-                issue=35,
-            )
-        try:
-            items = json.loads(items_json)
-        except json.JSONDecodeError as e:
-            return _error(
-                "INVALID_PARAMETER",
-                f"Invalid JSON in items_json: {e}",
-                parameter="items_json",
-                hint="items_json must be a JSON-stringified array.",
-                issue=35,
-            )
         if not isinstance(items, list):
             return _error(
                 "INVALID_PARAMETER",
-                "items_json must decode to a JSON array.",
-                parameter="items_json",
-                issue=35,
+                "items must be a list of dicts.",
+                parameter="items",
+                hint="Pass a native Python list, e.g., [{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}].",
+                issue=97,
             )
         result = add_flex_container_file(
             file_path, slide_index, items,
@@ -422,11 +417,11 @@ def pptx_edit_text(
 ) -> str:
     """Edit text content and formatting in an existing shape's paragraph. Supports all formatting: font, color, bold, italic, underline, alignment, line spacing."""
     try:
-        return _success(edit_text(
+        return _success({"message": edit_text(
             file_path, slide_index, shape_index, text, paragraph_index,
             font_name, font_size, font_color, bold, italic, underline,
             alignment, line_spacing,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -448,11 +443,11 @@ def pptx_add_paragraph(
 ) -> str:
     """Append a new paragraph to an existing shape's text frame. Useful for multi-line text."""
     try:
-        return _success(add_paragraph(
+        return _success({"message": add_paragraph(
             file_path, slide_index, shape_index, text,
             font_name, font_size, font_color, bold, italic, underline,
             alignment, line_spacing,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -481,11 +476,11 @@ def pptx_add_shape(
 ) -> str:
     """Add an auto shape. Types: rectangle, rounded_rectangle, oval, triangle, diamond, chevron, arrow_right, arrow_left, arrow_up, arrow_down, callout, star_5, hexagon, pentagon. Position/size in inches. Colors as hex. WARNING: text inside shapes renders BEHIND any shapes placed on top. For labels over background shapes, use pptx_add_textbox instead."""
     try:
-        return _success(add_shape(
+        return _success({"message": add_shape(
             file_path, slide_index, shape_type, left, top, width, height,
             fill_color, line_color, line_width, no_line,
             text, font_name, font_size, font_color, bold, alignment,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -502,7 +497,7 @@ def pptx_add_image(
 ) -> str:
     """Add an image (PNG, JPG, SVG) to a slide. Position in inches. If only width or height is given, aspect ratio is preserved. If both given, image stretches to fit."""
     try:
-        return _success(add_image(file_path, slide_index, image_path, left, top, width, height))
+        return _success({"message": add_image(file_path, slide_index, image_path, left, top, width, height)})
     except Exception as e:
         return _err(e)
 
@@ -511,7 +506,7 @@ def pptx_add_image(
 def pptx_delete_shape(file_path: str, slide_index: int, shape_index: int) -> str:
     """Delete a shape from a slide by its 0-based index."""
     try:
-        return _success(delete_shape(file_path, slide_index, shape_index))
+        return _success({"message": delete_shape(file_path, slide_index, shape_index)})
     except Exception as e:
         return _err(e)
 
@@ -534,11 +529,11 @@ def pptx_format_shape(
 ) -> str:
     """Reposition, resize, or restyle an existing shape. Dimensions in inches."""
     try:
-        return _success(format_shape(
+        return _success({"message": format_shape(
             file_path, slide_index, shape_index,
             left, top, width, height,
             fill_color, no_fill, line_color, line_width, no_line, rotation,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -549,11 +544,11 @@ def pptx_format_shape(
 def pptx_add_table(
     file_path: str,
     slide_index: int,
-    rows_json: str,
+    rows: List[List[Any]],
     left: float,
     top: float,
     width: float,
-    col_widths_json: str = "",
+    col_widths: Optional[List[float]] = None,
     row_height: float = 0.36,
     font_size: float = 12,
     header_bg: str = "051C2C",
@@ -562,16 +557,45 @@ def pptx_add_table(
     border_color: str = "D0D0D0",
     no_vertical_borders: bool = True,
 ) -> str:
-    """Add a professionally formatted table. rows_json: JSON 2D array e.g. '[["A","B"],["1","2"]]'. First row = header. col_widths_json: JSON array of fractions e.g. '[0.5, 0.5]'."""
+    """Add a professionally formatted table.
+
+    ``rows``: 2D list, e.g. ``[["Name","Score"],["Alice","95"]]``. First row = header.
+    ``col_widths``: optional list of fractions, e.g. ``[0.5, 0.5]``.
+
+    v0.3.0 (#97): ``rows_json`` / ``col_widths_json`` string params were
+    removed. Pass native Python lists directly.
+    """
     try:
-        rows = json.loads(rows_json)
-        col_widths = json.loads(col_widths_json) if col_widths_json else None
-        return _success(add_table(
+        if rows is None:
+            return _error(
+                "INVALID_PARAMETER",
+                "rows is required (list[list]).",
+                parameter="rows",
+                hint="Pass a 2D list, e.g. [[\"H1\",\"H2\"],[\"a\",\"b\"]].",
+                issue=97,
+            )
+        if not isinstance(rows, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "rows must be a list of lists.",
+                parameter="rows",
+                hint="Pass a native 2D list (list[list[Any]]).",
+                issue=97,
+            )
+        if col_widths is not None and not isinstance(col_widths, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "col_widths must be a list of floats or None.",
+                parameter="col_widths",
+                hint="Pass a native list, e.g. [0.5, 0.5].",
+                issue=97,
+            )
+        return _success({"message": add_table(
             file_path, slide_index, rows, left, top, width,
             col_widths, row_height, font_size,
             header_bg, header_fg, alt_row_bg, border_color,
             0.5, no_vertical_borders,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -592,10 +616,10 @@ def pptx_edit_table_cell(
 ) -> str:
     """Edit a single table cell's text and formatting."""
     try:
-        return _success(edit_table_cell(
+        return _success({"message": edit_table_cell(
             file_path, slide_index, shape_index, row, col,
             text, font_size, font_color, bold, bg_color, alignment,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -605,12 +629,23 @@ def pptx_edit_table_cells(
     file_path: str,
     slide_index: int,
     shape_index: int,
-    edits_json: str,
+    edits: List[Dict[str, Any]],
 ) -> str:
-    """Batch edit multiple table cells. edits_json: JSON array of objects e.g. '[{"row":0,"col":1,"text":"new"}]'. Each: {row, col, text?, font_size?, font_color?, bold?, bg_color?}."""
+    """Batch edit multiple table cells.
+
+    ``edits``: list of dicts, each ``{row, col, text?, font_size?, font_color?,
+    bold?, bg_color?}``. v0.3.0 (#97): was ``edits_json: str``.
+    """
     try:
-        edits = json.loads(edits_json)
-        return _success(edit_table_cells(file_path, slide_index, shape_index, edits))
+        if not isinstance(edits, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "edits must be a list of dicts.",
+                parameter="edits",
+                hint="Pass a native list, e.g. [{\"row\":0,\"col\":1,\"text\":\"new\"}].",
+                issue=97,
+            )
+        return _success({"message": edit_table_cells(file_path, slide_index, shape_index, edits)})
     except Exception as e:
         return _err(e)
 
@@ -628,10 +663,10 @@ def pptx_format_table(
 ) -> str:
     """Apply bulk formatting to an entire table (font, header colors, alternating rows)."""
     try:
-        return _success(format_table(
+        return _success({"message": format_table(
             file_path, slide_index, shape_index,
             font_name, font_size, header_bg, header_fg, alt_row_bg,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -675,12 +710,26 @@ def pptx_add_section_divider(
 def pptx_add_kpi_row(
     file_path: str,
     slide_index: int,
-    kpis_json: str,
+    kpis: List[Dict[str, Any]],
     y: float,
 ) -> str:
-    """Add a row of KPI callout boxes. kpis_json: JSON array e.g. '[{"value":"107.8M","label":"Revenue"}]'. y = vertical position in inches. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
+    """Add a row of KPI callout boxes.
+
+    ``kpis``: list of dicts, e.g. ``[{"value":"107.8M","label":"Revenue"}]``.
+    ``y``: vertical position in inches.
+    v0.3.0 (#97): was ``kpis_json: str``.
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+    """
     try:
-        result = add_kpi_row(file_path, slide_index, kpis_json, y)
+        if not isinstance(kpis, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "kpis must be a list of dicts.",
+                parameter="kpis",
+                hint="Pass a native list, e.g. [{\"value\":\"107.8M\",\"label\":\"Revenue\"}].",
+                issue=97,
+            )
+        result = add_kpi_row(file_path, slide_index, kpis, y)
         render_info = _auto_render(file_path, slide_index)
         return _success_with_render(result, render_info)
     except Exception as e:
@@ -691,15 +740,28 @@ def pptx_add_kpi_row(
 def pptx_add_bullet_block(
     file_path: str,
     slide_index: int,
-    items_json: str,
+    bullets: List[str],
     left: float,
     top: float,
     width: float,
     height: float,
 ) -> str:
-    """Add a bulleted text block with multiple items. items_json: JSON array of strings e.g. '["Item 1","Item 2"]'. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1."""
+    """Add a bulleted text block with multiple items.
+
+    ``bullets``: list of strings, e.g. ``["Item 1","Item 2"]``.
+    v0.3.0 (#97): was ``items_json: str``.
+    Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+    """
     try:
-        result = add_bullet_block(file_path, slide_index, items_json, left, top, width, height)
+        if not isinstance(bullets, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "bullets must be a list of strings.",
+                parameter="bullets",
+                hint="Pass a native list, e.g. [\"Item 1\",\"Item 2\"].",
+                issue=97,
+            )
+        result = add_bullet_block(file_path, slide_index, bullets, left, top, width, height)
         render_info = _auto_render(file_path, slide_index)
         return _success_with_render(result, render_info)
     except Exception as e:
@@ -710,7 +772,7 @@ def pptx_add_bullet_block(
 def pptx_add_responsive_card_row(
     file_path: str,
     slide_index: int,
-    cards_json: str,
+    cards: List[Dict[str, Any]],
     left: float,
     top: float,
     width: float,
@@ -721,26 +783,39 @@ def pptx_add_responsive_card_row(
 ) -> str:
     """Add a row of variable-height cards that auto-size to content and align to the max content height.
 
-    cards_json: JSON array of card dicts. Each card supports keys: title, body, label,
+    ``cards``: list of card dicts. Each card supports keys: title, body, label,
     accent_color (hex, "" disables bar), fill_color, title_size_pt, body_size_pt,
     title_color, body_color, label_size_pt, label_color, padding.
+    v0.3.0 (#97): was ``cards_json: str``.
 
     height_mode:
       - "content": each card uses its own content height (heights may differ).
       - "max":     all cards take the max individual content height (bottoms align).
       - "fill":    all cards fill max_height (short content is centered vertically).
 
-    Returns a JSON object: {"cards": [{"left","top","width","height"}, ...], "consumed_height": float}.
+    Returns a dict: {"cards": [{"left","top","width","height"}, ...], "consumed_height": float}.
     Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
     """
     try:
-        card_dicts = json.loads(cards_json) if isinstance(cards_json, str) else cards_json
+        if not isinstance(cards, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "cards must be a list of dicts.",
+                parameter="cards",
+                hint="Pass a native list, e.g. [{\"title\":\"A\",\"body\":\"...\"}].",
+                issue=97,
+            )
         # #43: CardSpec dataclass は未知キーを TypeError として弾くが、
         # MCP ツール層で明示的に ``INVALID_PARAMETER`` として報告し、
         # どのカード・どのキーが原因かを LLM エージェントが再試行時に
         # 解釈できる形式で返す。
         _card_known_keys = {f.name for f in fields(CardSpec)}
-        for i, spec in enumerate(card_dicts):
+        for i, spec in enumerate(cards):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"card[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
             unknown = set(spec.keys()) - _card_known_keys
             if unknown:
                 raise EngineError(
@@ -750,13 +825,13 @@ def pptx_add_responsive_card_row(
                         f"known keys: {sorted(_card_known_keys)}."
                     ),
                 )
-        cards = [CardSpec(**d) for d in card_dicts]
+        card_objs = [CardSpec(**d) for d in cards]
         prs = open_pptx(file_path)
         slide = _get_slide(prs, slide_index)
 
         placements, consumed = add_responsive_card_row(
             slide,
-            cards,
+            card_objs,
             left=left, top=top, width=width, max_height=max_height,
             gap=gap,
             height_mode=height_mode,  # type: ignore[arg-type]
@@ -765,7 +840,7 @@ def pptx_add_responsive_card_row(
 
         # CardPlacement を JSON 化可能な dict に変換する (save 前に行う)。
         # ここで serialize に失敗しても disk 上のファイルは変更されない (#34)。
-        result = {
+        result: Dict[str, Any] = {
             "cards": [
                 {
                     "left": p.left,
@@ -783,7 +858,12 @@ def pptx_add_responsive_card_row(
         save_pptx(prs, file_path)
 
         render_info = _auto_render(file_path, slide_index)
-        return _success_with_render(result, render_info)
+        # result は既に richer dict — auto-render の結果を同じ dict にマージ。
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
     except Exception as e:
         return _err(e)
 
@@ -793,22 +873,27 @@ def pptx_add_responsive_card_row(
 @mcp.tool()
 def pptx_build_slide(
     file_path: str,
-    spec_json: str,
+    spec: Dict[str, Any],
 ) -> str:
-    """Build an entire slide in ONE call from a JSON spec. Single file open/save. Much faster than individual tool calls. Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+    """Build an entire slide in ONE call from a spec dict. Single file open/save.
+    Much faster than individual tool calls. Auto-renders a preview PNG ONLY when
+    PPTX_MCP_AUTO_RENDER=1.
 
-    spec_json format:
+    v0.3.0 (#97): was ``spec_json: str``; now accepts a native dict.
+
+    spec format:
+    ```python
     {
         "layout": "content" | "section_divider" | "blank",
         "title": "Action title",
-        "background": "051C2C",  (optional)
-        "source": "Source: ...", (optional)
-        "page_number": 1,       (optional)
+        "background": "051C2C",  # optional
+        "source": "Source: ...", # optional
+        "page_number": 1,        # optional
         "elements": [
             {"type": "textbox", "left": 0.9, "top": 1.2, "width": 11.5, "height": 0.3,
-             "text": "...", "font_size": 14, "font_color": "2251FF", "bold": true},
+             "text": "...", "font_size": 14, "font_color": "2251FF", "bold": True},
             {"type": "shape", "shape_type": "rectangle", "left": 0.9, "top": 2.0,
-             "width": 5.0, "height": 1.0, "fill_color": "F5F5F5", "no_line": true},
+             "width": 5.0, "height": 1.0, "fill_color": "F5F5F5", "no_line": True},
             {"type": "table", "rows": [["H1","H2"],["v1","v2"]], "left": 0.9,
              "top": 3.0, "width": 11.5, "col_widths": [0.5, 0.5]},
             {"type": "kpi_row", "kpis": [{"value":"100","label":"Metric"}], "y": 1.2},
@@ -817,9 +902,19 @@ def pptx_build_slide(
             {"type": "image", "image_path": "/path/img.png", "left": 1.0, "top": 1.0, "width": 3.0}
         ]
     }
-    LAYOUT GUIDE: Body area is 1.15" to 6.65" (5.5" usable). Distribute elements evenly."""
+    ```
+    LAYOUT GUIDE: Body area is 1.15\" to 6.65\" (5.5\" usable). Distribute elements evenly.
+    """
     try:
-        result = build_slide(file_path, spec_json)
+        if not isinstance(spec, dict):
+            return _error(
+                "INVALID_PARAMETER",
+                "spec must be a dict.",
+                parameter="spec",
+                hint="Pass a native dict; e.g. {\"layout\":\"content\",\"title\":\"...\"}.",
+                issue=97,
+            )
+        result = build_slide(file_path, spec)
         idx_str = result.split("[")[1].split("]")[0]
         render_info = _auto_render(file_path, int(idx_str))
         return _success_with_render(result, render_info)
@@ -830,14 +925,29 @@ def pptx_build_slide(
 @mcp.tool()
 def pptx_build_deck(
     file_path: str,
-    slides_json: str,
+    slides: List[Dict[str, Any]],
 ) -> str:
-    """Build an ENTIRE DECK in ONE call from a JSON array of slide specs. Single file open/save for all slides. Use this for generating complete presentations efficiently. Auto-renders a preview PNG of the last slide ONLY when PPTX_MCP_AUTO_RENDER=1.
+    """Build an ENTIRE DECK in ONE call from a list of slide specs. Single file
+    open/save for all slides. Use this for generating complete presentations
+    efficiently. Auto-renders a preview PNG of the last slide ONLY when
+    PPTX_MCP_AUTO_RENDER=1.
 
-    slides_json: JSON array where each element is a slide spec (same format as pptx_build_slide).
-    Example: '[{"layout":"content","title":"Slide 1","elements":[...]},{"layout":"section_divider","title":"Section"}]'"""
+    v0.3.0 (#97): was ``slides_json: str``; now accepts a native list.
+
+    ``slides``: list where each element is a slide spec (same format as pptx_build_slide).
+    Example: ``[{"layout":"content","title":"Slide 1","elements":[...]},
+               {"layout":"section_divider","title":"Section"}]``.
+    """
     try:
-        result = build_deck(file_path, slides_json)
+        if not isinstance(slides, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "slides must be a list of dicts.",
+                parameter="slides",
+                hint="Pass a native list; e.g. [{\"layout\":\"content\",\"title\":\"...\"}].",
+                issue=97,
+            )
+        result = build_deck(file_path, slides)
         render_info = _auto_render(file_path, -1)
         return _success_with_render(result, render_info)
     except Exception as e:
@@ -932,10 +1042,10 @@ def pptx_list_icons(
     Common icons: briefcase, chart, person, globe, airplane, laptop, phone, car, building, arrow,
     calendar, clock, document, email, gear, handshake, key, lock, money, star, target, trophy, user."""
     try:
-        return _success(list_icons_formatted(
+        return _success({"message": list_icons_formatted(
             category=category or None,
             search=search or None,
-        ))
+        )})
     except Exception as e:
         return _err(e)
 
@@ -971,12 +1081,14 @@ def pptx_add_icon(
 def pptx_add_chart(
     file_path: str,
     slide_index: int,
-    chart_json: str,
+    chart: Dict[str, Any],
 ) -> str:
-    """Add a professional chart to a slide. chart_json is a JSON object with:
+    """Add a professional chart to a slide.
+
+    ``chart``: dict spec. v0.3.0 (#97): was ``chart_json: str``.
 
     Required: chart_type (column/stacked_column/bar/stacked_bar/line/pie/area/doughnut/radar),
-    categories (array of labels), series (array of {name, values, color?}).
+    categories (list of labels), series (list of {name, values, color?}).
 
     Optional: title, legend_position (bottom/top/right/left/null), data_labels_show (bool),
     data_labels_position, data_labels_number_format, axis_value_title, axis_value_min/max,
@@ -984,18 +1096,20 @@ def pptx_add_chart(
 
     Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
 
-    Example: '{"chart_type":"stacked_column","categories":["Q1","Q2"],"series":[{"name":"Rev","values":[10,20],"color":"2251FF"}],"data_labels_show":true}'"""
+    Example: ``{"chart_type":"stacked_column","categories":["Q1","Q2"],
+    "series":[{"name":"Rev","values":[10,20],"color":"2251FF"}],
+    "data_labels_show":True}``.
+    """
     try:
-        try:
-            spec = json.loads(chart_json) if isinstance(chart_json, str) else chart_json
-        except json.JSONDecodeError as e:
+        if not isinstance(chart, dict):
             return _error(
                 "INVALID_PARAMETER",
-                f"Invalid JSON in chart_json: {e}",
-                parameter="chart_json",
-                hint="chart_json must be a JSON-stringified object.",
+                "chart must be a dict.",
+                parameter="chart",
+                hint="Pass a native dict, e.g. {\"chart_type\":\"column\",\"categories\":[...],\"series\":[...]}.",
+                issue=97,
             )
-        result = add_chart(file_path, slide_index, spec)
+        result = add_chart(file_path, slide_index, chart)
         render_info = _auto_render(file_path, slide_index)
         return _success_with_render(result, render_info)
     except Exception as e:
@@ -1012,7 +1126,7 @@ def pptx_render_slide(
 ) -> str:
     """Render PPTX slide(s) to PNG image(s) for visual verification. Returns path(s) to PNG files that can be viewed with the Read tool. slide_index: 0-based (-1 = all slides). dpi: 150 for review, 300 for print."""
     try:
-        return _success(render_slide(file_path, slide_index, dpi=dpi))
+        return _success({"message": render_slide(file_path, slide_index, dpi=dpi)})
     except Exception as e:
         return _err(e)
 
@@ -1067,13 +1181,12 @@ def pptx_check_layout(
     """Validate slide layouts: overlaps, out-of-bounds, text overflow,
     unreadable font, title/divider collision, inconsistent gaps.
 
-    v0.2.0+: tool 戻り値は ``{"ok": true, "result": <payload>}`` で包まれる。
-    ``result`` 内は従来どおり:
+    v0.3.0+ (#99): detailed response is a flat dict — no double-encoded JSON.
 
-    - ``detailed=False`` (既定): legacy human-readable string
-      (``"All slides clean …"`` または ``"Found N layout issues:\\n…"``)。
-      #33 で導入された文字列フォーマットはそのまま維持される。
-    - ``detailed=True``: JSON 文字列 (中身は以下のスキーマ)。
+    - ``detailed=False`` (既定): ``result = {"message": "All slides clean …" |
+      "Found N layout issues:\\n…"}`` (legacy 文字列を ``message`` に wrap)。
+    - ``detailed=True``: ``result = {"slides": [...], "summary": {...}}``。
+      以前の ``json.dumps`` による inner-string encoding は撤廃された (#99)。
 
     ``detailed=True`` schema::
 
@@ -1097,8 +1210,9 @@ def pptx_check_layout(
             overflow_tolerance_pct=overflow_tolerance_pct,
         )
         if detailed:
-            return _success(json.dumps(result, ensure_ascii=False, indent=2))
-        return _success(_format_check_layout_summary(result))
+            # #99: pass the dict directly — single json.loads decodes the envelope.
+            return _success(result)
+        return _success({"message": _format_check_layout_summary(result)})
     except Exception as e:
         return _err(e)
 

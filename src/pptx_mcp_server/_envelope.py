@@ -3,11 +3,16 @@
 本モジュールは `server.py` から切り出したヘルパである。公開 API
 ではなく、モジュール名に先頭アンダースコアを付けている。
 
-Tool 戻り値はすべて JSON 文字列で、次の包に統一する (issue #88):
+Tool 戻り値はすべて JSON 文字列で、次の包に統一する (issue #88, #98):
 
-- 成功: ``{"ok": true, "result": <legacy value>}``
+- 成功: ``{"ok": true, "result": <dict>}``  — ``result`` は **常に dict**
 - 失敗: ``{"ok": false, "error": {"code": ..., "message": ...,
         "parameter"?: ..., "hint"?: ..., "issue"?: ...}}``
+
+v0.3.0 (#98): ``result`` は常に dict である。legacy で string を返していた
+tool は ``{"message": "..."}`` に wrap して ``_success`` に渡す。auto-render
+や追加情報は同じ dict に key を足す (``preview_path`` / ``render_warning``
+/ ``slides`` 等)。
 
 ``code`` は :class:`pptx_mcp_server.engine.EngineError` の ``ErrorCode``
 値と一致する (``INVALID_PARAMETER`` 等)。それ以外の例外は
@@ -22,13 +27,20 @@ from typing import Any, Dict, Optional
 from .engine import EngineError
 
 
-def _success(result: Any) -> str:
-    """Wrap a successful tool result in ``{"ok": true, "result": ...}``.
+def _success(result: Dict[str, Any]) -> str:
+    """Wrap a successful tool result in ``{"ok": true, "result": <dict>}``.
 
-    ``result`` は legacy tool の戻り値 (通常は human-readable string) を
-    そのまま格納する。JSON で表現できない object は呼び出し側で事前に
-    serialize すること。
+    v0.3.0 (#98): ``result`` は **常に dict**。legacy string を返していた
+    tool は ``{"message": "..."}`` の形で wrap して呼び出す。auto-render
+    や追加情報は同じ dict に key を足す (``preview_path`` / ``render_warning``
+    / ``slides`` 等)。
     """
+    if not isinstance(result, dict):
+        # Defensive guard: 呼び出し漏れ検出用。本 branch に落ちるのは bug。
+        raise TypeError(
+            f"_success() expects dict; got {type(result).__name__}. "
+            "v0.3.0 以降 result は常に dict を渡す (#98)."
+        )
     return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
 
 
@@ -69,19 +81,23 @@ def _err(e: Exception) -> str:
     return _error("INTERNAL_ERROR", f"{type(e).__name__}: {e}")
 
 
-def _success_with_render(primary: Any, render_info: Dict[str, Any]) -> str:
-    """Compose a success payload plus the auto-render outcome.
+def _success_with_render(message: str, render_info: Dict[str, Any]) -> str:
+    """Compose a success payload plus the auto-render outcome (v0.3.0 shape).
 
-    - Render disabled → plain ``{"ok": true, "result": <primary>}``.
-    - Render succeeded → result wraps ``{"value": primary, "preview_path": ...}``.
-    - Render failed/timed out → result wraps ``{"value": primary,
-      "render_warning": {...}}``.
+    v0.3.0 (#98): ``result`` は常に dict で, ``message`` キーに legacy
+    human-readable string を入れる。auto-render の結果は同じ dict に
+    ``preview_path`` か ``render_warning`` を **追加** する。
+
+    - Render disabled → ``{"ok": true, "result": {"message": <msg>}}``
+    - Render succeeded → ``{"message": <msg>, "preview_path": ...}``
+    - Render failed/timed out → ``{"message": <msg>, "render_warning": {...}}``
     """
+    payload: Dict[str, Any] = {"message": message}
     if not render_info.get("rendered") and render_info.get("reason") == "disabled":
-        return _success(primary)
+        return _success(payload)
     if render_info.get("rendered"):
-        return _success(
-            {"value": primary, "preview_path": render_info.get("preview_path")}
-        )
+        payload["preview_path"] = render_info.get("preview_path")
+        return _success(payload)
     # Failed / timeout — primary still succeeded.
-    return _success({"value": primary, "render_warning": render_info})
+    payload["render_warning"] = render_info
+    return _success(payload)
