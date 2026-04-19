@@ -14,7 +14,13 @@ Parameter conventions (new tools):
 import json
 from typing import Any, Dict
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError as e:
+    raise ImportError(
+        "pptx_mcp_server.server requires the 'mcp' package. "
+        "Install with: pip install 'pptx-mcp-server[mcp]'"
+    ) from e
 
 from .engine import (
     EngineError,
