@@ -438,7 +438,8 @@ def pptx_add_flex_container(
       - for type=rectangle: `fill_color`, `line_color`, `line_width`, `no_line`
 
     direction: "row" (horizontal) | "column" (vertical). gap and padding in inches.
-    align cross-axis: "stretch" | "start" | "center" | "end" (MVP treats all as stretch for size).
+    align cross-axis: "stretch" のみ現状サポート。"start" / "center" / "end" は
+    `INVALID_PARAMETER` を返す (将来対応予定; #24 参照)。
 
     例: ``items_json='[{"sizing":"fixed","size":2,"type":"rectangle"}]'``
 
