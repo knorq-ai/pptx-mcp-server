@@ -4,11 +4,14 @@ Shape operations -- add textbox, add shape, edit text, add paragraph, delete, li
 
 from __future__ import annotations
 
+import unicodedata
+
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
+from pptx.oxml.ns import qn
 
 from .pptx_io import (
     EngineError, ErrorCode,
@@ -17,6 +20,9 @@ from .pptx_io import (
 from .text_metrics import estimate_text_height, estimate_text_width, wrap_text
 
 from ..theme import Theme, resolve_color
+
+# DrawingML 名前空間 (OOXML 直接操作用)。
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 # Mapping of alignment strings to enums
 _ALIGN_MAP = {
@@ -54,6 +60,20 @@ _SHAPE_MAP = {
 # ── Internal helpers ────────────────────────────────────────────
 
 
+def _set_east_asian_font(run, typeface: str) -> None:
+    """run の ``<a:rPr>`` に ``<a:ea typeface="..."/>`` を設定する.
+
+    python-pptx は east-asian typeface を直接公開しないため、lxml で
+    ``rPr`` 要素を取得し ``<a:ea>`` 子要素を差し替える。既存の ``<a:ea>``
+    は削除してから新しく追加することで重複を避ける。
+    """
+    rPr = run._r.get_or_add_rPr()
+    for existing in rPr.findall(qn("a:ea")):
+        rPr.remove(existing)
+    ea = rPr.makeelement(qn("a:ea"), {"typeface": typeface})
+    rPr.append(ea)
+
+
 def _apply_font(
     paragraph,
     font_name=None,
@@ -63,8 +83,21 @@ def _apply_font(
     italic=None,
     underline=None,
     theme=None,
+    east_asian_font=None,
 ):
-    """Apply font formatting to a paragraph's font."""
+    """paragraph とその全 run に font 書式を適用する.
+
+    挙動:
+        - paragraph レベル (``pPr/defRPr`` 経由) にも値を書き込むが、
+          authoritative な値は各 run の ``<a:rPr>`` に直接書き込む。これに
+          より Keynote / Google Slides / PowerPoint Online のような
+          ``defRPr`` を異なる優先順位で解決するクライアントでも意図した
+          サイズ・フォントで描画される (issue #28)。
+        - ``east_asian_font`` を指定した場合、各 run の ``rPr`` に
+          ``<a:ea typeface="…"/>`` を追加する (issue #40)。
+        - paragraph に run が存在しない場合は run レベル書き込みを skip する
+          (caller 側で p.text 等により run を追加している想定)。
+    """
     font = paragraph.font
     if font_name is not None:
         font.name = font_name
@@ -79,6 +112,26 @@ def _apply_font(
         font.italic = italic
     if underline is not None:
         font.underline = underline
+
+    # run レベルにも同じ属性を書き込む。これにより ``<a:r><a:rPr sz="…"/>``
+    # が確実に emit され、クライアント依存の resolve 経路に左右されない。
+    for run in paragraph.runs:
+        rfont = run.font
+        if font_name is not None:
+            rfont.name = font_name
+        if font_size is not None:
+            rfont.size = Pt(font_size)
+        if font_color is not None:
+            color_hex = resolve_color(theme, font_color) if theme else font_color
+            rfont.color.rgb = _parse_color(color_hex)
+        if bold is not None:
+            rfont.bold = bold
+        if italic is not None:
+            rfont.italic = italic
+        if underline is not None:
+            rfont.underline = underline
+        if east_asian_font is not None:
+            _set_east_asian_font(run, east_asian_font)
 
 
 def _apply_paragraph(
@@ -114,10 +167,17 @@ def _add_textbox(
     line_spacing=None,
     underline=None,
     theme=None,
+    east_asian_font=None,
 ):
-    """In-memory: add textbox to an existing slide object. Returns shape_index."""
+    """In-memory: add textbox to an existing slide object. Returns shape_index.
+
+    ``vertical_anchor`` は python-pptx の ``tf.vertical_anchor`` 経由で設定
+    する (issue #41)。直接 ``bodyPr.set("anchor", ...)`` を呼ぶと round-trip
+    で属性が重複する危険があるため、lxml 直接操作はしない。
+    """
     if theme:
         font_name = font_name or theme.fonts.get("body")
+        east_asian_font = east_asian_font or theme.fonts.get("east_asian")
         if font_color:
             font_color = resolve_color(theme, font_color)
 
@@ -128,15 +188,15 @@ def _add_textbox(
     tf.word_wrap = word_wrap
 
     if vertical_anchor and vertical_anchor in _ANCHOR_MAP:
-        from pptx.oxml.ns import qn
-        bodyPr = tf._txBody.find(qn("a:bodyPr"))
-        anchor_val = {"top": "t", "middle": "ctr", "bottom": "b"}[vertical_anchor]
-        bodyPr.set("anchor", anchor_val)
+        tf.vertical_anchor = _ANCHOR_MAP[vertical_anchor]
 
     p = tf.paragraphs[0]
     p.text = text
 
-    _apply_font(p, font_name, font_size, font_color, bold, italic, underline, theme=theme)
+    _apply_font(
+        p, font_name, font_size, font_color, bold, italic, underline,
+        theme=theme, east_asian_font=east_asian_font,
+    )
     _apply_paragraph(p, alignment, line_spacing)
 
     return len(list(slide.shapes)) - 1
@@ -525,6 +585,70 @@ def _fit_font_size(
     return min_size, height_est <= height
 
 
+def _strip_last_grapheme(s: str) -> str:
+    """``s`` の末尾 grapheme cluster (近似) を 1 つ除去した文字列を返す.
+
+    Unicode の正式な grapheme cluster は ``regex`` の ``\\X`` や ICU が必要
+    だが、stdlib のみで ``_truncate_to_fit`` が壊しやすいケース (ZWJ emoji
+    sequence / 結合文字 / variation selector) を安全に扱えるよう近似実装
+    する。具体的には:
+
+        1. 末尾から結合マーク (``unicodedata.combining(ch) != 0``)、
+           ZWJ/ZWNJ (``\u200C`` / ``\u200D``) を飛ばす。
+        2. その直前が base 文字なら 1 文字削る。さらに再度 (1) を行い、
+           削った base に付随する combining 系列も丸ごと落とす。
+        3. 削った結果に末尾 ZWJ が残る (ZWJ emoji sequence の途中) 場合
+           はそれも除去する。
+
+    Args:
+        s: 対象文字列。
+
+    Returns:
+        末尾 grapheme を除去した文字列。空文字列は空文字列を返す。
+
+    Issue:
+        #29 — code-unit ベースの切り詰めが ZWJ emoji や濁点などを半端に
+        残すのを防ぐ。
+    """
+    if not s:
+        return s
+
+    # (1) 末尾の combining / ZW-joiner / variation selector を飛ばして base を探す。
+    i = len(s)
+    while i > 0:
+        ch = s[i - 1]
+        cp = ord(ch)
+        if (
+            unicodedata.combining(ch) != 0
+            or cp in (0x200C, 0x200D)
+            or 0xFE00 <= cp <= 0xFE0F
+        ):
+            i -= 1
+            continue
+        break
+
+    # (2) base 文字を 1 つ落とす。全部 combiner だった場合は全削除となる。
+    if i > 0:
+        i -= 1
+
+    # (3) 残った末尾に ZWJ 等の「次の cluster を期待する」文字が残って
+    # いる場合はさらに剥がす (例: `A<ZWJ>B` を右から削るとき `A<ZWJ>`
+    # が中途半端に残らないようにする)。
+    while i > 0:
+        ch = s[i - 1]
+        cp = ord(ch)
+        if (
+            unicodedata.combining(ch) != 0
+            or cp in (0x200C, 0x200D)
+            or 0xFE00 <= cp <= 0xFE0F
+        ):
+            i -= 1
+            continue
+        break
+
+    return s[:i]
+
+
 def _truncate_to_fit(
     text: str,
     usable_width: float,
@@ -538,8 +662,8 @@ def _truncate_to_fit(
     方針:
     - まず wrap_text で折り返し結果を得る。
     - 高さが許す行数 ``max_lines`` を算出する。
-    - 最終行は末尾から 1 文字ずつ削りながら ``line + 省略記号`` の幅が
-      ``usable_width`` 以下になるまで縮める。
+    - 最終行は末尾から 1 grapheme cluster ずつ削りながら ``line + 省略記号``
+      の幅が ``usable_width`` 以下になるまで縮める (issue #29)。
     - ``max_lines == 0`` の場合は空文字列を返す。
     """
     line_h = size_pt * 0.0139 * _AUTO_FIT_LINE_HEIGHT
@@ -559,9 +683,14 @@ def _truncate_to_fit(
 
     retained = lines[:max_lines]
     last = retained[-1]
-    # last + ellipsis が usable_width を超える間、末尾から 1 文字ずつ削る。
+    # last + ellipsis が usable_width を超える間、末尾から grapheme
+    # cluster 単位で削る (code-unit 単位だと ZWJ emoji / 結合文字を壊す)。
     while last and estimate_text_width(last + _ELLIPSIS, size_pt, font_name) > usable_width:
-        last = last[:-1]
+        new_last = _strip_last_grapheme(last)
+        if new_last == last:
+            # 保険: 進まない場合は code unit で 1 文字削る。
+            new_last = last[:-1]
+        last = new_last
     retained[-1] = (last + _ELLIPSIS) if last else _ELLIPSIS
     return "\n".join(retained)
 
@@ -582,6 +711,7 @@ def add_auto_fit_textbox(
     align: str = "left",
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
+    east_asian_font: str | None = None,
 ) -> tuple[object, float]:
     """指定 box に収まる最大 font size でテキストを描画する.
 
@@ -639,6 +769,7 @@ def add_auto_fit_textbox(
         word_wrap=True,
         line_spacing=None,
         underline=None,
+        east_asian_font=east_asian_font,
     )
 
     shape = slide.shapes[idx]

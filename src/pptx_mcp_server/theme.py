@@ -131,6 +131,9 @@ MCKINSEY = Theme(
     fonts={
         "title": "Arial",
         "body": "Arial",
+        # 明示的に east-asian typeface を指定し、非 JP Windows での中国語
+        # フォントへの自動 fallback を防ぐ (issue #40)。
+        "east_asian": "Yu Gothic",
     },
     sizes={
         "title": 22,
@@ -207,6 +210,9 @@ DELOITTE = Theme(
     fonts={
         "title": "Arial",
         "body": "Arial",
+        # 明示的に east-asian typeface を指定し、非 JP Windows での中国語
+        # フォントへの自動 fallback を防ぐ (issue #40)。
+        "east_asian": "Yu Gothic",
     },
     sizes={
         "title": 22,
@@ -276,6 +282,9 @@ NEUTRAL = Theme(
     fonts={
         "title": "Arial",
         "body": "Arial",
+        # 明示的に east-asian typeface を指定し、非 JP Windows での中国語
+        # フォントへの自動 fallback を防ぐ (issue #40)。
+        "east_asian": "Yu Gothic",
     },
     sizes={
         "title": 22,
