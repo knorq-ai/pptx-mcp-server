@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0.0"]
+validation = ["fontTools>=4.40"]
 test = ["pytest>=7", "fontTools>=4.40"]
 
 [project.urls]

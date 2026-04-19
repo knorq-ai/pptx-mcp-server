@@ -164,10 +164,44 @@ Required (installed by `pip install pptx-mcp-server`):
 - [python-pptx](https://python-pptx.readthedocs.io/) -- PPTX file manipulation
 - [lxml](https://lxml.de/) -- XML processing
 
-Optional extra (installed by `pip install 'pptx-mcp-server[mcp]'`):
+Optional extras:
 
-- [mcp](https://modelcontextprotocol.io/) -- Model Context Protocol SDK
-  (required only for the `pptx-mcp-server` CLI / `pptx_mcp_server.server`)
+- `[mcp]` -- `pip install 'pptx-mcp-server[mcp]'` pulls the
+  [mcp](https://modelcontextprotocol.io/) SDK, required for the
+  `pptx-mcp-server` CLI / `pptx_mcp_server.server`.
+- `[validation]` -- `pip install 'pptx-mcp-server[validation]'` pulls
+  [fontTools](https://fonttools.readthedocs.io/) and enables the real-font
+  overflow validation path. See "Layout validation" below.
+
+### Layout validation
+
+`check_deck_extended` / `check_text_overflow` ship two paths for text overflow
+detection:
+
+- `font_source="heuristic"` (default) -- zero-deps; uses the in-tree width
+  heuristic (shared with `add_auto_fit_textbox`).
+- `font_source="real"` (opt-in, needs the `[validation]` extra) -- reads
+  real advance widths from TTF/TTC via fontTools. This gives an
+  **independent source of truth** against the heuristic, so that drift
+  between the heuristic and PowerPoint's actual rendering cannot hide an
+  overflow behind the auto-fit primitive.
+
+```python
+from pptx import Presentation
+from pptx_mcp_server.engine.font_metrics import discover_system_fonts
+from pptx_mcp_server.engine.validation import check_deck_extended
+
+prs = Presentation("deck.pptx")
+report = check_deck_extended(
+    prs,
+    font_source="real",
+    font_paths=discover_system_fonts(),  # or {"Arial": "/path/to/Arial.ttf"}
+)
+print(report["summary"])
+```
+
+Fonts that can't be resolved fall back to the heuristic per-paragraph and
+emit a `font_not_measured` warning so partial coverage is still useful.
 
 ### System tools
 
