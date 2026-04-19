@@ -4,9 +4,16 @@ Integration tests for MCP server tool functions.
 These tests call the tool functions directly (they are regular Python functions
 wrapped by the MCP decorator). All file-based operations use tmp_path.
 
-v0.2.0 response contract (issue #88):
-    - Success: json.dumps({"ok": true, "result": <legacy payload>})
+v0.3.0 response contract (issues #88, #98, #99):
+    - Success: json.dumps({"ok": true, "result": <dict>})
+      — ``result`` is ALWAYS a dict. Human-readable status messages are under
+        the ``message`` key (``result["message"]``).
     - Error:   json.dumps({"ok": false, "error": {"code", "message", ...}})
+
+v0.3.0 structured-params contract (issue #97):
+    - ``*_json: str`` parameters were removed. Tests pass native Python
+      structures (list / dict) to MCP tools.
+
 Tests unwrap via ``_unwrap_ok`` / ``_unwrap_err`` helpers below.
 """
 
@@ -49,20 +56,31 @@ from pptx_mcp_server.server import (
     pptx_check_layout,
     pptx_add_flex_container,
     pptx_add_responsive_card_row,
+    pptx_build_slide,
+    pptx_build_deck,
+    pptx_add_chart,
     _format_check_layout_summary,
     INSTRUCTIONS,
 )
 
 
-# ── Response-shape helpers (v0.2.0, issue #88) ──────────────────────────
+# ── Response-shape helpers (v0.3.0, issues #88, #98) ───────────────────
 
 def _unwrap_ok(payload: str):
-    """Parse a tool response and assert it is a success; return the result."""
+    """Parse a tool response and assert it is a success; return the result dict.
+
+    v0.3.0 (#98): ``result`` は **常に dict**。caller は ``result["message"]``
+    等のキーに明示的にアクセスする。
+    """
     parsed = json.loads(payload)
     assert isinstance(parsed, dict), f"response must be a JSON object, got {type(parsed)}"
     assert parsed.get("ok") is True, f"expected ok=true, got {parsed!r}"
     assert "result" in parsed, f"success payload must include 'result': {parsed!r}"
-    return parsed["result"]
+    result = parsed["result"]
+    assert isinstance(result, dict), (
+        f"v0.3.0 contract: result must be a dict, got {type(result).__name__}: {result!r}"
+    )
+    return result
 
 
 def _unwrap_err(payload: str) -> dict:
@@ -130,8 +148,8 @@ class TestCreatePptx:
         path = str(tmp_path / "new.pptx")
         result = pptx_create(path)
         assert os.path.exists(path)
-        msg = _unwrap_ok(result)
-        assert "Created" in msg
+        payload = _unwrap_ok(result)
+        assert "Created" in payload["message"]
 
 
 class TestFileBased:
@@ -139,22 +157,22 @@ class TestFileBased:
 
     def test_add_slide(self, deck):
         result = pptx_add_slide(deck)
-        assert "Added slide" in _unwrap_ok(result)
+        assert "Added slide" in _unwrap_ok(result)["message"]
         prs = open_pptx(deck)
         assert len(prs.slides) == 2
 
     def test_add_textbox(self, deck):
         result = pptx_add_textbox(deck, 0, 1, 1, 4, 0.5, text="Hello")
-        assert "Added textbox" in _unwrap_ok(result)
+        assert "Added textbox" in _unwrap_ok(result)["message"]
         prs = open_pptx(deck)
         slide = prs.slides[0]
         texts = [s.text_frame.text for s in slide.shapes if s.has_text_frame]
         assert "Hello" in texts
 
     def test_add_table(self, deck):
-        rows_json = json.dumps([["Name", "Score"], ["Alice", "95"]])
-        result = pptx_add_table(deck, 0, rows_json, 1, 1, 5)
-        assert "Added table" in _unwrap_ok(result)
+        rows = [["Name", "Score"], ["Alice", "95"]]
+        result = pptx_add_table(deck, 0, rows, 1, 1, 5)
+        assert "Added table" in _unwrap_ok(result)["message"]
         prs = open_pptx(deck)
         slide = prs.slides[0]
         table_shapes = [s for s in slide.shapes if s.has_table]
@@ -166,16 +184,15 @@ class TestCompositeTools:
 
     def test_add_content_slide(self, deck):
         result = pptx_add_content_slide(deck, "Revenue Analysis")
-        # auto-render disabled by default → result is plain string payload
         payload = _unwrap_ok(result)
-        assert "Added content slide" in payload
+        assert "Added content slide" in payload["message"]
         prs = open_pptx(deck)
         assert len(prs.slides) == 2  # original + content
 
     def test_add_section_divider(self, deck):
         result = pptx_add_section_divider(deck, "Q1 Results", subtitle="FY2024")
         payload = _unwrap_ok(result)
-        assert "Added section divider" in payload
+        assert "Added section divider" in payload["message"]
         prs = open_pptx(deck)
         assert len(prs.slides) == 2
 
@@ -200,58 +217,140 @@ class TestErrorCases:
         assert err["code"] == "INVALID_PARAMETER"
 
 
-class TestJsonParsing:
-    """JSON-based tools must parse input correctly and reject invalid JSON."""
+# ── Issue #97: structured params (native list/dict replace *_json: str) ──
 
-    def test_add_table_with_valid_json(self, deck):
-        rows = json.dumps([["X", "Y"], ["1", "2"]])
+class TestStructuredParams:
+    """Structured-param tools accept native Python values and reject bad types."""
+
+    def test_add_table_with_native_rows(self, deck):
+        rows = [["X", "Y"], ["1", "2"]]
         result = pptx_add_table(deck, 0, rows, 1, 1, 5)
-        assert "Added table" in _unwrap_ok(result)
+        assert "Added table" in _unwrap_ok(result)["message"]
 
-    def test_add_kpi_row_with_valid_json(self, deck):
-        kpis = json.dumps([{"value": "99", "label": "Score"}])
+    def test_add_table_rows_none_rejected(self, deck):
+        result = pptx_add_table(deck, 0, None, 1, 1, 5)  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "rows"
+
+    def test_add_table_rows_wrong_type_rejected(self, deck):
+        result = pptx_add_table(deck, 0, "not a list", 1, 1, 5)  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "rows"
+
+    def test_add_table_col_widths_wrong_type_rejected(self, deck):
+        result = pptx_add_table(deck, 0, [["a", "b"]], 1, 1, 5, col_widths="bad")  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "col_widths"
+
+    def test_add_kpi_row_with_native_list(self, deck):
+        kpis = [{"value": "99", "label": "Score"}]
         result = pptx_add_kpi_row(deck, 0, kpis, 2.0)
         payload = _unwrap_ok(result)
-        # payload may be either the plain legacy string (render disabled) or
-        # a dict with {"value": ..., "render_warning"/"preview_path"} when enabled.
-        if isinstance(payload, dict):
-            payload = payload.get("value", "")
-        assert "Added 1 KPI" in payload
+        assert "Added 1 KPI" in payload["message"]
 
-    def test_invalid_json_returns_error(self, deck):
-        result = pptx_add_table(deck, 0, "not valid json", 1, 1, 5)
+    def test_add_kpi_row_wrong_type_rejected(self, deck):
+        result = pptx_add_kpi_row(deck, 0, "not a list", 2.0)  # type: ignore[arg-type]
         err = _unwrap_err(result)
-        # json.loads on gibberish raises JSONDecodeError → INTERNAL_ERROR wrap
-        assert err["code"] in {"INVALID_PARAMETER", "INTERNAL_ERROR"}
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "kpis"
 
-    def test_add_bullet_block_with_valid_json(self, deck):
-        items = json.dumps(["Point A", "Point B"])
-        result = pptx_add_bullet_block(deck, 0, items, 1, 2, 5, 3)
+    def test_add_bullet_block_with_native_list(self, deck):
+        bullets = ["Point A", "Point B"]
+        result = pptx_add_bullet_block(deck, 0, bullets, 1, 2, 5, 3)
         payload = _unwrap_ok(result)
-        if isinstance(payload, dict):
-            payload = payload.get("value", "")
-        assert "Added bullet block" in payload
+        assert "Added bullet block" in payload["message"]
+
+    def test_add_bullet_block_wrong_type_rejected(self, deck):
+        result = pptx_add_bullet_block(deck, 0, "not a list", 1, 2, 5, 3)  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "bullets"
+
+    def test_edit_table_cells_with_native_list(self, deck):
+        # First add a table so shape_index=0 is a table.
+        pptx_add_table(deck, 0, [["H1", "H2"], ["v1", "v2"]], 1, 1, 5)
+        prs = open_pptx(deck)
+        slide = prs.slides[0]
+        shape_idx = next(i for i, s in enumerate(slide.shapes) if s.has_table)
+        edits = [{"row": 0, "col": 1, "text": "new"}]
+        result = pptx_edit_table_cells(deck, 0, shape_idx, edits)
+        _unwrap_ok(result)
+
+    def test_edit_table_cells_wrong_type_rejected(self, deck):
+        result = pptx_edit_table_cells(deck, 0, 0, "bad")  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "edits"
+
+    def test_build_slide_with_native_dict(self, deck):
+        spec = {"layout": "content", "title": "Hello", "elements": []}
+        result = pptx_build_slide(deck, spec)
+        payload = _unwrap_ok(result)
+        assert "Built slide" in payload["message"]
+
+    def test_build_slide_wrong_type_rejected(self, deck):
+        result = pptx_build_slide(deck, "not a dict")  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "spec"
+
+    def test_build_deck_with_native_list(self, deck):
+        slides = [
+            {"layout": "content", "title": "S1", "elements": []},
+            {"layout": "content", "title": "S2", "elements": []},
+        ]
+        result = pptx_build_deck(deck, slides)
+        payload = _unwrap_ok(result)
+        assert "Built 2 slides" in payload["message"]
+
+    def test_build_deck_wrong_type_rejected(self, deck):
+        result = pptx_build_deck(deck, "not a list")  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "slides"
+
+    def test_add_chart_with_native_dict(self, deck):
+        chart = {
+            "chart_type": "column",
+            "categories": ["A", "B"],
+            "series": [{"name": "S", "values": [1, 2]}],
+            "left": 1.0, "top": 1.0, "width": 5.0, "height": 3.0,
+        }
+        result = pptx_add_chart(deck, 0, chart)
+        _unwrap_ok(result)
+
+    def test_add_chart_wrong_type_rejected(self, deck):
+        result = pptx_add_chart(deck, 0, "not a dict")  # type: ignore[arg-type]
+        err = _unwrap_err(result)
+        assert err["code"] == "INVALID_PARAMETER"
+        assert err["parameter"] == "chart"
 
 
-# ── Issue #33: pptx_check_layout back-compat ────────────────────────
+# ── Issue #33 / #98: pptx_check_layout back-compat (wrapped in message) ───
 
 class TestCheckLayoutBackCompat:
-    """``pptx_check_layout`` wraps the legacy string in the new ``result`` field.
+    """``pptx_check_layout`` wraps the legacy string in result.message.
 
-    Issue #33 の legacy 文字列は ``result`` フィールドに入ったまま保持される。
-    v0.2.0 breaking: caller は ``_unwrap_ok`` で result を取り出す必要がある。
+    Issue #33 の legacy 文字列は ``result["message"]`` に入る (#98)。
+    ``detailed=True`` は ``result["slides"]`` / ``result["summary"]`` を
+    そのまま返し, 以前の double-encoded JSON 文字列 (#99) は撤廃された。
     """
 
-    def test_clean_deck_returns_legacy_string(self, deck):
+    def test_clean_deck_returns_legacy_string_in_message(self, deck):
         result = pptx_check_layout(deck)
         payload = _unwrap_ok(result)
-        assert isinstance(payload, str)
-        assert payload.startswith("All slides clean") or payload.startswith("Found")
+        msg = payload["message"]
+        assert isinstance(msg, str)
+        assert msg.startswith("All slides clean") or msg.startswith("Found")
 
     def test_clean_deck_wording_exact(self, deck):
         payload = _unwrap_ok(pptx_check_layout(deck))
-        if payload.startswith("All slides clean"):
-            assert payload == (
+        msg = payload["message"]
+        if msg.startswith("All slides clean"):
+            assert msg == (
                 "All slides clean — no overlaps, out-of-bounds, text overflow, "
                 "or readability issues detected."
             )
@@ -260,19 +359,27 @@ class TestCheckLayoutBackCompat:
         pptx_add_shape(deck, 0, "rectangle", 1.0, 1.0, 3.0, 2.0, fill_color="2251FF")
         pptx_add_shape(deck, 0, "rectangle", 2.0, 1.5, 3.0, 2.0, fill_color="FF0000")
         payload = _unwrap_ok(pptx_check_layout(deck))
-        assert isinstance(payload, str)
-        assert payload.startswith("Found")
-        assert "overlap" in payload.lower()
+        msg = payload["message"]
+        assert isinstance(msg, str)
+        assert msg.startswith("Found")
+        assert "overlap" in msg.lower()
 
-    def test_detailed_returns_json(self, deck):
+    def test_detailed_returns_flat_dict_no_inner_string(self, deck):
+        """#99: detailed=True must return the dict inline — single json.loads."""
         payload = _unwrap_ok(pptx_check_layout(deck, detailed=True))
-        # payload is itself a JSON string (legacy behaviour of detailed=True)
-        assert isinstance(payload, str)
-        parsed = json.loads(payload)
-        assert "slides" in parsed
-        assert "summary" in parsed
-        assert isinstance(parsed["slides"], list)
-        assert set(parsed["summary"].keys()) >= {"errors", "warnings", "infos"}
+        # payload itself is a dict (not a JSON-encoded string needing re-decode).
+        assert "slides" in payload
+        assert "summary" in payload
+        assert isinstance(payload["slides"], list)
+        assert set(payload["summary"].keys()) >= {"errors", "warnings", "infos"}
+
+    def test_detailed_single_json_loads_suffices(self, deck):
+        """#99 regression: one json.loads on the envelope fully decodes the result."""
+        raw = pptx_check_layout(deck, detailed=True)
+        parsed = json.loads(raw)
+        # No second json.loads needed on parsed["result"].
+        assert isinstance(parsed["result"], dict)
+        assert "slides" in parsed["result"]
 
     def test_format_helper_clean(self):
         empty = {"slides": [], "summary": {"errors": 0, "warnings": 0, "infos": 0}}
@@ -338,11 +445,11 @@ class TestResponsiveCardRowSaveOrder:
 
         monkeypatch.setattr(server_mod, "add_responsive_card_row", fake_add_row)
 
-        cards_json = json.dumps([{"title": "A", "body": "a"}])
+        cards = [{"title": "A", "body": "a"}]
         result = server_mod.pptx_add_responsive_card_row(
             file_path=deck,
             slide_index=0,
-            cards_json=cards_json,
+            cards=cards,
             left=0.5, top=0.5, width=10.0, max_height=3.0,
         )
         err = _unwrap_err(result)
@@ -356,17 +463,15 @@ class TestResponsiveCardRowSaveOrder:
     def test_happy_path_saves_once_and_returns_placements(self, deck):
         from pptx_mcp_server.server import pptx_add_responsive_card_row
 
-        cards_json = json.dumps(
-            [{"title": "A", "body": "aa"}, {"title": "B", "body": "bb"}]
-        )
+        cards = [{"title": "A", "body": "aa"}, {"title": "B", "body": "bb"}]
         result = pptx_add_responsive_card_row(
             file_path=deck,
             slide_index=0,
-            cards_json=cards_json,
+            cards=cards,
             left=0.5, top=0.5, width=10.0, max_height=3.0,
         )
         payload = _unwrap_ok(result)
-        # render disabled by default → payload is the plain cards dict.
+        # render disabled by default → payload carries the cards dict directly.
         assert "cards" in payload
         assert len(payload["cards"]) == 2
         assert {"left", "top", "width", "height"} <= set(payload["cards"][0].keys())
@@ -375,51 +480,41 @@ class TestResponsiveCardRowSaveOrder:
         assert len(prs.slides) >= 1
 
 
-# ── Issue #35: flex_container items_json ───────────────────────────
+# ── Issue #97: flex_container native items (was items_json) ─────────
 
-class TestFlexContainerItemsJson:
-    """``pptx_add_flex_container`` が items_json (JSON 文字列) を受け取る."""
+class TestFlexContainerItems:
+    """``pptx_add_flex_container`` が ``items: list[dict]`` を受け取る (#97)."""
 
-    def test_items_json_string_works(self, deck):
-        items_json = json.dumps(
-            [{"sizing": "fixed", "size": 2.0, "type": "rectangle", "fill_color": "2251FF"}]
-        )
+    def test_native_list_works(self, deck):
+        items = [
+            {"sizing": "fixed", "size": 2.0, "type": "rectangle", "fill_color": "2251FF"}
+        ]
         result = pptx_add_flex_container(
             file_path=deck,
             slide_index=0,
-            items_json=items_json,
+            items=items,
             left=0.5, top=0.5, width=10.0, height=1.0,
         )
         payload = _unwrap_ok(result)
         assert "allocations" in payload
 
-    def test_raw_list_rejected(self, deck):
+    def test_non_list_rejected(self, deck):
         result = pptx_add_flex_container(
             file_path=deck,
             slide_index=0,
-            items_json=[{"sizing": "fixed", "size": 2.0, "type": "rectangle"}],  # type: ignore[arg-type]
+            items="not a list",  # type: ignore[arg-type]
             left=0.5, top=0.5, width=10.0, height=1.0,
         )
         err = _unwrap_err(result)
         assert err["code"] == "INVALID_PARAMETER"
-        assert err.get("parameter") == "items_json"
+        assert err.get("parameter") == "items"
 
-    def test_invalid_json_rejected(self, deck):
+    def test_dict_rejected(self, deck):
+        """Passing a dict where a list is expected → INVALID_PARAMETER."""
         result = pptx_add_flex_container(
             file_path=deck,
             slide_index=0,
-            items_json="not valid json",
-            left=0.5, top=0.5, width=10.0, height=1.0,
-        )
-        err = _unwrap_err(result)
-        assert err["code"] == "INVALID_PARAMETER"
-        assert err.get("parameter") == "items_json"
-
-    def test_json_decoded_object_rejected(self, deck):
-        result = pptx_add_flex_container(
-            file_path=deck,
-            slide_index=0,
-            items_json='{"not": "array"}',
+            items={"not": "array"},  # type: ignore[arg-type]
             left=0.5, top=0.5, width=10.0, height=1.0,
         )
         err = _unwrap_err(result)
@@ -432,11 +527,11 @@ class TestResponsiveCardRowStrictKeys:
     """``pptx_add_responsive_card_row`` が未知キーを弾く (#43)."""
 
     def test_unknown_key_rejected_with_index_and_name(self, deck):
-        cards_json = json.dumps([{"title": "t", "body": "b", "typo": "x"}])
+        cards = [{"title": "t", "body": "b", "typo": "x"}]
         result = pptx_add_responsive_card_row(
             file_path=deck,
             slide_index=0,
-            cards_json=cards_json,
+            cards=cards,
             left=0.5, top=0.5, width=10.0, max_height=3.0,
         )
         err = _unwrap_err(result)
@@ -445,16 +540,14 @@ class TestResponsiveCardRowStrictKeys:
         assert "card[0]" in err["message"]
 
     def test_unknown_key_index_points_to_bad_card(self, deck):
-        cards_json = json.dumps(
-            [
-                {"title": "ok", "body": "ok"},
-                {"title": "bad", "body": "b", "oops": 1},
-            ]
-        )
+        cards = [
+            {"title": "ok", "body": "ok"},
+            {"title": "bad", "body": "b", "oops": 1},
+        ]
         result = pptx_add_responsive_card_row(
             file_path=deck,
             slide_index=0,
-            cards_json=cards_json,
+            cards=cards,
             left=0.5, top=0.5, width=10.0, max_height=3.0,
         )
         err = _unwrap_err(result)
@@ -463,16 +556,14 @@ class TestResponsiveCardRowStrictKeys:
         assert "oops" in err["message"]
 
     def test_valid_cards_ok_regression(self, deck):
-        cards_json = json.dumps(
-            [
-                {"title": "A", "body": "aa", "accent_color": "2251FF"},
-                {"title": "B", "body": "bb", "padding": 0.25},
-            ]
-        )
+        cards = [
+            {"title": "A", "body": "aa", "accent_color": "2251FF"},
+            {"title": "B", "body": "bb", "padding": 0.25},
+        ]
         result = pptx_add_responsive_card_row(
             file_path=deck,
             slide_index=0,
-            cards_json=cards_json,
+            cards=cards,
             left=0.5, top=0.5, width=10.0, max_height=3.0,
         )
         payload = _unwrap_ok(result)
@@ -480,17 +571,41 @@ class TestResponsiveCardRowStrictKeys:
         assert len(payload["cards"]) == 2
 
 
-# ── Issue #88: structured response contract ────────────────────────
+# ── Issues #88, #98: structured response contract ──────────────────
 
 class TestStructuredResponseContract:
-    """All tool returns follow the v0.2.0 ``{ok, result|error}`` contract."""
+    """All tool returns follow the v0.3.0 ``{ok, result|error}`` contract.
 
-    def test_success_shape_has_ok_and_result(self, tmp_path):
+    v0.3.0 (#98): ``result`` is ALWAYS a dict — tools wrap legacy string
+    payloads under ``result["message"]``.
+    """
+
+    def test_success_shape_has_ok_and_result_dict(self, tmp_path):
         path = str(tmp_path / "s.pptx")
         response = pptx_create(path)
         parsed = json.loads(response)
-        assert parsed == {"ok": True, "result": parsed["result"]}
-        assert isinstance(parsed["result"], str)
+        assert parsed["ok"] is True
+        assert isinstance(parsed["result"], dict)
+        assert "message" in parsed["result"]
+        assert isinstance(parsed["result"]["message"], str)
+
+    def test_all_primitive_tools_return_dict_result(self, deck):
+        """Every success path returns result: dict (never raw string)."""
+        responses = [
+            pptx_create(deck.replace(".pptx", "-new.pptx")),
+            pptx_get_info(deck),
+            pptx_add_slide(deck),
+            pptx_add_textbox(deck, 0, 1, 1, 3, 0.5, text="hi"),
+            pptx_add_shape(deck, 0, "rectangle", 1, 1, 2, 2),
+            pptx_add_content_slide(deck, "Title"),
+            pptx_add_section_divider(deck, "Section"),
+        ]
+        for r in responses:
+            parsed = json.loads(r)
+            assert parsed["ok"] is True, f"expected ok=true, got {parsed!r}"
+            assert isinstance(parsed["result"], dict), (
+                f"v0.3.0 contract: result must be a dict, got {parsed!r}"
+            )
 
     def test_caller_can_discriminate_on_ok(self, deck, tmp_path):
         ok_response = pptx_get_info(deck)
@@ -508,20 +623,19 @@ class TestStructuredResponseContract:
         assert err["code"] == "SLIDE_NOT_FOUND"
 
     def test_error_can_include_parameter_and_hint(self, deck):
-        """flex_container raw-list rejection sets parameter + hint + issue."""
+        """flex_container non-list rejection sets parameter + hint + issue."""
         err = _unwrap_err(pptx_add_flex_container(
             file_path=deck,
             slide_index=0,
-            items_json=[],  # type: ignore[arg-type]
+            items="bad",  # type: ignore[arg-type]
             left=0.5, top=0.5, width=10.0, height=1.0,
         ))
-        assert err["parameter"] == "items_json"
+        assert err["parameter"] == "items"
         assert "hint" in err
-        assert err.get("issue") == 35
+        assert err.get("issue") == 97
 
     def test_all_error_paths_return_valid_json(self, tmp_path):
         """Every error path must round-trip through json.loads cleanly."""
-        # A handful of representative error sources.
         responses = [
             pptx_get_info(str(tmp_path / "x.pptx")),
             pptx_read_slide(str(tmp_path / "x.pptx"), 0),
@@ -534,13 +648,15 @@ class TestStructuredResponseContract:
             assert parsed["error"]["message"]
 
 
-# ── Issue #86: auto_render opt-in + timeout ────────────────────────
+# ── Issue #86 / #98: auto_render opt-in + timeout, dict-only result ────
 
 class TestAutoRenderOptIn:
     """Auto-render is OFF by default; opt-in via PPTX_MCP_AUTO_RENDER.
 
-    See issue #86. All tests install monkey-patched ``render_slide`` so no
-    real LibreOffice subprocess ever fires.
+    See issue #86. v0.3.0 (#98): render info is merged into the ``result`` dict
+    alongside ``message`` — no more ``{"value": ...}`` wrapper.
+    All tests install monkey-patched ``render_slide`` so no real
+    LibreOffice subprocess ever fires.
     """
 
     def test_default_does_not_invoke_renderer(self, deck, monkeypatch):
@@ -557,11 +673,13 @@ class TestAutoRenderOptIn:
         monkeypatch.setattr(server_mod, "render_slide", fake_render)
 
         result = server_mod.pptx_add_content_slide(deck, "Title")
-        _unwrap_ok(result)
+        payload = _unwrap_ok(result)
+        assert "preview_path" not in payload
+        assert "render_warning" not in payload
         assert called["count"] == 0, "renderer should not fire when auto-render disabled"
 
     def test_env_var_enables_renderer(self, deck, monkeypatch):
-        """With PPTX_MCP_AUTO_RENDER=1, renderer IS called."""
+        """With PPTX_MCP_AUTO_RENDER=1, renderer IS called and preview_path lives in result."""
         from pptx_mcp_server import server as server_mod
 
         monkeypatch.setenv("PPTX_MCP_AUTO_RENDER", "1")
@@ -576,10 +694,9 @@ class TestAutoRenderOptIn:
         result = server_mod.pptx_add_content_slide(deck, "Title")
         payload = _unwrap_ok(result)
         assert called["count"] == 1, "renderer should fire when auto-render enabled"
-        # result is wrapped as {"value": <legacy>, "preview_path": ...}
-        assert isinstance(payload, dict)
+        # v0.3.0 shape: {"message": ..., "preview_path": ...}
         assert payload["preview_path"] == "/tmp/fake.png"
-        assert "Added content slide" in payload["value"]
+        assert "Added content slide" in payload["message"]
 
     def test_env_var_various_truthy_values(self, monkeypatch):
         from pptx_mcp_server import server as server_mod
@@ -613,11 +730,10 @@ class TestAutoRenderOptIn:
         # Must return well before the 20s the renderer would take.
         assert elapsed < 5.0, f"timeout did not kick in: {elapsed:.1f}s"
         payload = _unwrap_ok(result)
-        assert isinstance(payload, dict)
         assert "render_warning" in payload
         assert payload["render_warning"]["reason"] == "timeout"
         # primary action still succeeded.
-        assert "Added content slide" in payload["value"]
+        assert "Added content slide" in payload["message"]
 
     def test_render_failure_does_not_fail_tool(self, deck, monkeypatch):
         """Renderer raising an exception → tool still returns ok=true."""
@@ -632,7 +748,6 @@ class TestAutoRenderOptIn:
 
         result = server_mod.pptx_add_content_slide(deck, "Title")
         payload = _unwrap_ok(result)  # primary action still succeeds
-        assert isinstance(payload, dict)
         assert "render_warning" in payload
         assert payload["render_warning"]["reason"] == "failed"
         assert "libreoffice exploded" in payload["render_warning"]["error"]
@@ -652,7 +767,7 @@ class TestAutoRenderOptIn:
 
         # invalid slide_index → add_kpi_row raises before _auto_render runs.
         result = server_mod.pptx_add_kpi_row(
-            deck, 999, json.dumps([{"value": "1", "label": "x"}]), 2.0
+            deck, 999, [{"value": "1", "label": "x"}], 2.0
         )
         _unwrap_err(result)
         assert called["count"] == 0, "renderer fired despite primary-action error"
@@ -672,6 +787,24 @@ class TestAutoRenderOptIn:
 
         monkeypatch.setenv("PPTX_MCP_RENDER_TIMEOUT", "2.5")
         assert server_mod._auto_render_timeout() == 2.5
+
+    def test_responsive_card_row_merges_render_info_into_result(self, deck, monkeypatch):
+        """#98: responsive_card_row's rich-dict result merges preview_path in-place."""
+        from pptx_mcp_server import server as server_mod
+
+        monkeypatch.setenv("PPTX_MCP_AUTO_RENDER", "1")
+        monkeypatch.setattr(server_mod, "render_slide", lambda *a, **kw: "/tmp/cr.png")
+
+        cards = [{"title": "A", "body": "a"}]
+        result = server_mod.pptx_add_responsive_card_row(
+            file_path=deck,
+            slide_index=0,
+            cards=cards,
+            left=0.5, top=0.5, width=10.0, max_height=3.0,
+        )
+        payload = _unwrap_ok(result)
+        assert "cards" in payload
+        assert payload["preview_path"] == "/tmp/cr.png"
 
 
 # ── Issue #90: INSTRUCTIONS trimmed of product policy ──────────────

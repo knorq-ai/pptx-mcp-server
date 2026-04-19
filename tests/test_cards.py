@@ -436,11 +436,11 @@ def test_mcp_tool_rejects_unknown_height_mode(pptx_file):
     は既存 invalid-param エラー形式で弾かれる (#26 Problem B、境界側)."""
     from pptx_mcp_server.server import pptx_add_responsive_card_row
 
-    cards_json = json.dumps([{"title": "A", "body": "a"}])
+    cards = [{"title": "A", "body": "a"}]
     out = pptx_add_responsive_card_row(
         file_path=pptx_file,
         slide_index=0,
-        cards_json=cards_json,
+        cards=cards,
         left=0.5,
         top=0.5,
         width=10.0,

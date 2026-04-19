@@ -126,9 +126,18 @@ Adding a new script involves extending `_CJK_RANGES` (or a new script set),
 calibrating a width constant, and adding sentinel characters to
 `tests/test_calibration.py`. See `CONTRIBUTING.md` → "Adding a new script".
 
-## Response Shape (v0.2.0+)
+## Response Shape (v0.3.0+)
 
-> **BREAKING CHANGE (v0.2.0).** All MCP tool responses are now JSON-encoded and
+> **BREAKING CHANGE (v0.3.0).** `result` is now **always a dict**. Tools that
+> previously returned a raw human-readable string now wrap it in
+> `{"message": "..."}`. Composite tools with auto-render integration add
+> `preview_path` / `render_warning` keys to the same dict instead of wrapping
+> the primary payload under a `value` key. `pptx_check_layout(detailed=True)`
+> returns the findings dict inline — single `json.loads()` on the tool response
+> fully decodes it (previously the dict was re-encoded as a string under
+> `result`). See issues #98, #99.
+
+> **BREAKING CHANGE (v0.2.0).** All MCP tool responses are JSON-encoded and
 > wrapped in a `{ok, result | error}` envelope.  Previously tools returned raw
 > human-readable strings (success) and bracket-prefixed errors like
 > `"[INVALID_PARAMETER] ..."`.  Consumers must `json.loads()` the response and
@@ -137,7 +146,19 @@ calibrating a width constant, and adding sentinel characters to
 Success:
 
 ```json
-{"ok": true, "result": "Added content slide [1]: Revenue Analysis"}
+{"ok": true, "result": {"message": "Added content slide [1]: Revenue Analysis"}}
+```
+
+Success with auto-render:
+
+```json
+{"ok": true, "result": {"message": "Added content slide [1]: ...", "preview_path": "/tmp/slide-01.png"}}
+```
+
+Detailed layout check:
+
+```json
+{"ok": true, "result": {"slides": [...], "summary": {"errors": 0, "warnings": 0, "infos": 0}}}
 ```
 
 Error:
@@ -147,10 +168,10 @@ Error:
   "ok": false,
   "error": {
     "code": "INVALID_PARAMETER",
-    "parameter": "items_json",
-    "message": "items_json must be a JSON string, not a raw Python list.",
-    "hint": "Pass a JSON-stringified array, e.g., '[{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}]'.",
-    "issue": 35
+    "parameter": "items",
+    "message": "items must be a list of dicts.",
+    "hint": "Pass a native Python list, e.g., [{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}].",
+    "issue": 97
   }
 }
 ```
@@ -159,6 +180,41 @@ Error `code` values mirror `EngineError.code`: `INVALID_PARAMETER`,
 `FILE_NOT_FOUND`, `SLIDE_NOT_FOUND`, `SHAPE_NOT_FOUND`, `INDEX_OUT_OF_RANGE`,
 `INVALID_PPTX`, `TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`.  The
 `parameter`, `hint`, and `issue` fields are optional.
+
+## Structured Parameters (v0.3.0+)
+
+> **BREAKING CHANGE (v0.3.0).** `*_json: str` tool parameters were replaced
+> with structured types (native `list` / `dict`). FastMCP validates the top
+> level from Python type annotations; tools enforce dict-key contracts (e.g.
+> `CardSpec` unknown-key rejection) at the tool boundary. See issue #97.
+
+Before (v0.2.x):
+
+```python
+pptx_add_table(path, 0, rows_json='[["H1","H2"],["a","b"]]', 1, 1, 5)
+pptx_build_deck(path, slides_json='[{"layout":"content",...}]')
+```
+
+After (v0.3.0+):
+
+```python
+pptx_add_table(path, 0, rows=[["H1","H2"],["a","b"]], 1, 1, 5)
+pptx_build_deck(path, slides=[{"layout":"content", ...}])
+```
+
+Affected tools (and replaced param names):
+
+| Tool | Old param | New param |
+|------|-----------|-----------|
+| `pptx_add_flex_container` | `items_json: str` | `items: list[dict]` |
+| `pptx_add_responsive_card_row` | `cards_json: str` | `cards: list[dict]` |
+| `pptx_build_slide` | `spec_json: str` | `spec: dict` |
+| `pptx_build_deck` | `slides_json: str` | `slides: list[dict]` |
+| `pptx_add_chart` | `chart_json: str` | `chart: dict` |
+| `pptx_add_kpi_row` | `kpis_json: str` | `kpis: list[dict]` |
+| `pptx_add_table` | `rows_json: str` + `col_widths_json: str` | `rows: list[list]` + `col_widths: list[float] \| None` |
+| `pptx_add_bullet_block` | `items_json: str` | `bullets: list[str]` |
+| `pptx_edit_table_cells` | `edits_json: str` | `edits: list[dict]` |
 
 ## Auto-Render (opt-in; v0.2.0+)
 
@@ -177,12 +233,14 @@ export PPTX_MCP_AUTO_RENDER=1           # enable
 export PPTX_MCP_RENDER_TIMEOUT=10        # seconds (default 10)
 ```
 
-When enabled, the successful result payload becomes
-`{"value": "<legacy string>", "preview_path": "/path/to/slide-01.png"}`.  If
+When enabled, the successful result payload carries an additional
+`preview_path` key alongside `message`:
+`{"message": "<legacy string>", "preview_path": "/path/to/slide-01.png"}`. If
 the render times out or fails, the primary action still succeeds and the
-result payload carries a `render_warning` field instead of a `preview_path`.
-For explicit, synchronous rendering use `pptx_render_slide` directly — that
-tool is unaffected by this gate.
+result payload carries a `render_warning` field instead of a `preview_path`
+(v0.3.0 unifies this shape — prior versions wrapped under a `value` key, see
+issue #98). For explicit, synchronous rendering use `pptx_render_slide`
+directly — that tool is unaffected by this gate.
 
 ## Tools
 
