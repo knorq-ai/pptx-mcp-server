@@ -63,6 +63,13 @@ part of the default test run and also run in the library-only CI job
 If you need MCP-specific behavior, put it in `src/pptx_mcp_server/server.py`
 or a sibling module that is only imported when the CLI starts.
 
+## File safety
+
+`save_pptx` is atomic (temp-file-then-rename) but does NOT guard against
+concurrent writes from multiple processes. The single-writer contract is:
+at most one process mutates a given `.pptx` path at a time. Consumers that
+need multi-writer coordination should layer their own locking on top.
+
 ## Pull request flow
 
 1. Branch off `main` with a short, topic-style name

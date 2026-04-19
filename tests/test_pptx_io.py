@@ -88,7 +88,7 @@ class TestParseColor:
 
 
 class TestSavePptx:
-    """save_pptx must write a valid file."""
+    """save_pptx must write a valid file atomically."""
 
     def test_saves_to_disk(self, tmp_path):
         prs = Presentation()
@@ -98,3 +98,104 @@ class TestSavePptx:
         # Verify it's loadable
         loaded = Presentation(path)
         assert loaded is not None
+
+    def test_happy_path_round_trips(self, tmp_path):
+        """Happy path: save round-trips through Presentation."""
+        prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+        # Add a blank slide so we can inspect structure after reload.
+        layout = prs.slide_layouts[6]
+        prs.slides.add_slide(layout)
+
+        path = str(tmp_path / "rt.pptx")
+        save_pptx(prs, path)
+
+        assert os.path.exists(path)
+        loaded = Presentation(path)
+        assert len(loaded.slides) == 1
+        assert abs(loaded.slide_width / 914400 - 13.333) < 0.01
+
+        # No lingering temp files.
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
+
+    def test_crash_during_save_preserves_original(self, tmp_path, monkeypatch):
+        """If Presentation.save raises, the pre-existing target file is untouched."""
+        path = tmp_path / "existing.pptx"
+        original_bytes = b"ORIGINAL CONTENT -- not a real pptx"
+        path.write_bytes(original_bytes)
+
+        prs = Presentation()
+
+        def boom(*_args, **_kwargs):
+            raise IOError("simulated mid-write failure")
+
+        # Presentation() is a factory; patch save on the instance's class.
+        monkeypatch.setattr(type(prs), "save", boom, raising=True)
+
+        with pytest.raises(IOError, match="simulated"):
+            save_pptx(prs, str(path))
+
+        # Original content preserved verbatim.
+        assert path.read_bytes() == original_bytes
+        # No lingering .tmp.* sibling.
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
+
+    def test_crash_with_no_existing_target_leaves_no_file(self, tmp_path, monkeypatch):
+        """If target did not exist, a failing save must not create it."""
+        path = tmp_path / "fresh.pptx"
+        assert not path.exists()
+
+        prs = Presentation()
+
+        def boom(*_args, **_kwargs):
+            raise IOError("simulated mid-write failure")
+
+        # Presentation() is a factory; patch save on the instance's class.
+        monkeypatch.setattr(type(prs), "save", boom, raising=True)
+
+        with pytest.raises(IOError, match="simulated"):
+            save_pptx(prs, str(path))
+
+        assert not path.exists()
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
+
+    def test_two_sequential_saves_same_path(self, tmp_path):
+        """Back-to-back saves to the same path must both succeed."""
+        path = str(tmp_path / "twice.pptx")
+
+        prs1 = Presentation()
+        save_pptx(prs1, path)
+        assert os.path.exists(path)
+        first_mtime = os.path.getmtime(path)
+
+        prs2 = Presentation()
+        save_pptx(prs2, path)
+        assert os.path.exists(path)
+
+        # File still loadable after the second save.
+        loaded = Presentation(path)
+        assert loaded is not None
+
+        # No lingering temp files.
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
+        # Final file is the second save (or at least not removed).
+        assert os.path.getmtime(path) >= first_mtime
+
+    def test_relative_path(self, tmp_path, monkeypatch):
+        """Relative paths work identically (resolved via os.path.abspath)."""
+        monkeypatch.chdir(tmp_path)
+        prs = Presentation()
+        save_pptx(prs, "relative.pptx")
+
+        target = tmp_path / "relative.pptx"
+        assert target.exists()
+        loaded = Presentation(str(target))
+        assert loaded is not None
+
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
