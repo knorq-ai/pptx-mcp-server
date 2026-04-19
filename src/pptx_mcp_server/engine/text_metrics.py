@@ -9,10 +9,12 @@
 - フォントファミリ差は現時点で無視する (引数は将来拡張のため保持)。
 - プロポーショナルフォントであっても全 ASCII 文字を同一の平均幅として扱う。
 - イタリック・装飾体の幅差分は無視する。Bold のみ 1.05 倍の補正を行う。
-- 合字・結合文字・絵文字の幅は保証しない。
+- 合字・絵文字の幅は保証しない。結合マーク・ゼロ幅文字は 0 幅で扱う。
 """
 
 from __future__ import annotations
+
+import unicodedata
 
 # ASCII 平均文字幅 (size_pt あたりの inches 係数)
 _ASCII_WIDTH_PER_PT: float = 0.0083
@@ -24,17 +26,46 @@ _CJK_WIDTH_PER_PT: float = 0.0139
 _BOLD_MULTIPLIER: float = 1.05
 
 
+# CJK スクリプトに属する Unicode 範囲 (全角相当の幅を持つもの).
+# 半角カタカナ U+FF61–U+FF9F は CJK スクリプトではあるが幅は ASCII 相当のため
+# `_HALF_WIDTH_KANA_RANGE` として別途管理し、この表から除外する。
+_CJK_RANGES: tuple[tuple[int, int], ...] = (
+    (0x2E80, 0x2EFF),  # CJK Radicals Supplement
+    (0x2F00, 0x2FDF),  # Kangxi Radicals
+    (0x3000, 0x303F),  # CJK Symbols and Punctuation
+    (0x3040, 0x309F),  # Hiragana
+    (0x30A0, 0x30FF),  # Katakana (full-width)
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0xFF01, 0xFF60),  # Fullwidth ASCII + symbols (pre half-width kana)
+    (0xFFE0, 0xFFEF),  # Fullwidth symbols (post half-width kana)
+    (0x20000, 0x2FFFF),  # SIP: CJK Ext B/C/D/E/F + Compat Ideographs Supplement
+)
+
+# 半角カタカナの範囲 (CJK スクリプトだが幅は ASCII 相当).
+_HALF_WIDTH_KANA_RANGE: tuple[int, int] = (0xFF61, 0xFF9F)
+
+
 def is_cjk(char: str) -> bool:
-    """CJK Unified / Hiragana / Katakana / 全角句読点・記号を判定する.
+    """CJK スクリプトに属する文字かを判定する.
 
-    判定対象の Unicode 範囲:
-    - CJK Unified Ideographs: U+4E00 – U+9FFF
-    - Hiragana: U+3040 – U+309F
-    - Katakana: U+30A0 – U+30FF
+    判定対象の Unicode 範囲 (全角相当 + 半角カタカナ):
+
+    - CJK Radicals Supplement: U+2E80 – U+2EFF
+    - Kangxi Radicals: U+2F00 – U+2FDF
     - CJK Symbols and Punctuation: U+3000 – U+303F
-    - Halfwidth and Fullwidth Forms: U+FF00 – U+FFEF
+    - Hiragana: U+3040 – U+309F
+    - Katakana (full-width): U+30A0 – U+30FF
+    - CJK Unified Ideographs Extension A: U+3400 – U+4DBF
+    - CJK Unified Ideographs: U+4E00 – U+9FFF
+    - CJK Compatibility Ideographs: U+F900 – U+FAFF
+    - Halfwidth and Fullwidth Forms: U+FF01 – U+FF60, U+FF61 – U+FF9F, U+FFE0 – U+FFEF
+    - Supplementary Ideographic Plane (Ext B/C/D/E/F): U+20000 – U+2FFFF
 
-    改行文字 (``\\n`` など) は False を返す。
+    空文字列および ``\\n`` / ``\\r`` / ``\\t`` は False を返す。
+    半角カタカナは CJK スクリプトの一部であるため True を返すが、字幅は
+    ASCII 相当である点に注意すること (:func:`estimate_char_width` で別処理)。
     """
     if not char:
         return False
@@ -42,15 +73,52 @@ def is_cjk(char: str) -> bool:
     if char in ("\n", "\r", "\t"):
         return False
     code = ord(char[0])
-    if 0x4E00 <= code <= 0x9FFF:
+    # 半角カタカナは CJK スクリプト扱いとする (字幅は別管理)。
+    if _HALF_WIDTH_KANA_RANGE[0] <= code <= _HALF_WIDTH_KANA_RANGE[1]:
         return True
-    if 0x3040 <= code <= 0x309F:
+    for start, end in _CJK_RANGES:
+        if start <= code <= end:
+            return True
+    return False
+
+
+def is_half_width_kana(char: str) -> bool:
+    """半角カタカナ (U+FF61 – U+FF9F) かを判定する.
+
+    半角カタカナは CJK スクリプトに属するものの、実描画では ASCII 相当の
+    ~0.5em 幅となる。``estimate_char_width`` 側で CJK 全角幅ではなく
+    ASCII 幅を割り当てるためにこの述語を利用する。空文字列は False を返す。
+    """
+    if not char:
+        return False
+    code = ord(char[0])
+    return _HALF_WIDTH_KANA_RANGE[0] <= code <= _HALF_WIDTH_KANA_RANGE[1]
+
+
+def is_zero_width(char: str) -> bool:
+    """描画上の前進幅を持たない文字かを判定する.
+
+    以下の文字を 0 幅として扱う:
+
+    - U+200B (ZERO WIDTH SPACE)
+    - U+200C (ZERO WIDTH NON-JOINER)
+    - U+200D (ZERO WIDTH JOINER)
+    - U+2060 (WORD JOINER)
+    - U+FEFF (ZERO WIDTH NO-BREAK SPACE / BOM)
+    - U+FE00 – U+FE0F (Variation Selectors)
+    - ``unicodedata.combining(ch) != 0`` を満たす結合マーク全般
+
+    空文字列は False を返す。
+    """
+    if not char:
+        return False
+    ch = char[0]
+    code = ord(ch)
+    if code in (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF):
         return True
-    if 0x30A0 <= code <= 0x30FF:
+    if 0xFE00 <= code <= 0xFE0F:
         return True
-    if 0x3000 <= code <= 0x303F:
-        return True
-    if 0xFF00 <= code <= 0xFFEF:
+    if unicodedata.combining(ch) != 0:
         return True
     return False
 
@@ -58,12 +126,22 @@ def is_cjk(char: str) -> bool:
 def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float:
     """単一文字の推定描画幅 (inches) を返す.
 
-    CJK 全角は ``size_pt * 0.0139`` (1em)、ASCII 相当は ``size_pt * 0.0083``
-    (平均幅) として近似する。``font`` は将来拡張のため引数に残すが、現状は
-    Arial/Helvetica を前提として無視される。
+    判定優先順位:
+
+    1. ゼロ幅文字 (``is_zero_width``) は 0.0 を返す。
+    2. 半角カタカナ (``is_half_width_kana``) は ASCII 相当の ``size_pt * 0.0083``。
+    3. CJK 全角 (``is_cjk``) は ``size_pt * 0.0139`` (1em)。
+    4. それ以外の ASCII 相当は ``size_pt * 0.0083`` (平均幅)。
+
+    ``font`` は将来拡張のため引数に残すが、現状は Arial/Helvetica を前提
+    として無視される。
     """
     if not char:
         return 0.0
+    if is_zero_width(char):
+        return 0.0
+    if is_half_width_kana(char):
+        return size_pt * _ASCII_WIDTH_PER_PT
     if is_cjk(char):
         return size_pt * _CJK_WIDTH_PER_PT
     return size_pt * _ASCII_WIDTH_PER_PT
