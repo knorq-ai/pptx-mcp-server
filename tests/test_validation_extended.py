@@ -12,6 +12,8 @@ from pptx.util import Inches, Pt
 
 from pptx_mcp_server.engine.validation import (
     ValidationFinding,
+    _axis_groups,
+    _effective_paragraph_size,
     check_deck_extended,
     check_divider_collision,
     check_inconsistent_gaps,
@@ -271,3 +273,175 @@ def test_validation_finding_to_dict_shape() -> None:
     assert d["category"] == "text_overflow"
     assert d["message"] == "m"
     assert d["suggested_fix"] == "fix"
+
+
+# ---------------------------------------------------------------------------
+# _axis_groups drift (Issue #21)
+# ---------------------------------------------------------------------------
+
+
+class TestAxisGroupsDrift:
+    """``_axis_groups`` が running-mean drift で誤吸収しないことを確認する."""
+
+    def test_linear_drift_not_one_group(self) -> None:
+        # tops = [0.0, 0.05, 0.10, 0.15, 0.20] は anchor 基準だと
+        # 0.0 基準で tolerance 0.1 を超える要素 (0.15, 0.20) が別 group になる
+        values = [
+            (0, 0.0),
+            (1, 0.05),
+            (2, 0.10),
+            (3, 0.15),
+            (4, 0.20),
+        ]
+        groups = _axis_groups(values, tolerance=0.1)
+        # 5 要素が全部 1 group にまとめられる (= running-mean drift) ことは
+        # あってはならない
+        assert not (len(groups) == 1 and len(groups[0]) == 5)
+
+    def test_tight_cluster_is_one_group(self) -> None:
+        # anchor 1.0 で全要素が tolerance 0.1 以内 → 1 group
+        values = [(0, 1.0), (1, 1.0), (2, 1.09)]
+        groups = _axis_groups(values, tolerance=0.1)
+        assert groups == [[0, 1, 2]]
+
+    def test_boundary_split_into_two_groups(self) -> None:
+        # 1.0 と 1.18 は tolerance 0.1 を超えるので別 group
+        values = [(0, 1.0), (1, 1.18)]
+        groups = _axis_groups(values, tolerance=0.1)
+        # どちらも 3 要素未満なので返却されず、空リストになる
+        assert groups == []
+
+    def test_regression_3kpi_uneven_gaps_still_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # gaps [0.15, 0.15, 0.30] を持つ 4-KPI row が引き続き inconsistent
+        # と判定されることを担保する (drift 修正でも既存動作が崩れない)
+        slide = one_slide_prs.slides[0]
+        _add_rect(slide, 1.00, 2.0, 1.0, 1.0, name="A")
+        _add_rect(slide, 2.15, 2.0, 1.0, 1.0, name="B")  # gap 0.15
+        _add_rect(slide, 3.30, 2.0, 1.0, 1.0, name="C")  # gap 0.15
+        _add_rect(slide, 4.60, 2.0, 1.0, 1.0, name="D")  # gap 0.30
+        findings = check_inconsistent_gaps(one_slide_prs)
+        assert any(f.category == "inconsistent_gap" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# check_deck_extended summary aggregation (Issue #22)
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryAggregation:
+    """``summary`` が legacy overlaps / out_of_bounds も含めて集計することを確認する."""
+
+    def test_clean_deck_all_zeros(self, one_slide_prs: Presentation) -> None:
+        # 何も置かないスライドは summary 全 0
+        result = check_deck_extended(one_slide_prs)
+        assert result["summary"] == {"errors": 0, "warnings": 0, "infos": 0}
+
+    def test_single_overlap_counts_as_error(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        slide = one_slide_prs.slides[0]
+        # 大きく重なる 2 つの矩形 (overlap area >= 0.15 sq in)
+        _add_rect(slide, 1.0, 1.0, 3.0, 2.0, name="A")
+        _add_rect(slide, 2.0, 1.5, 3.0, 2.0, name="B")
+        result = check_deck_extended(one_slide_prs)
+        slide0 = result["slides"][0]
+        assert len(slide0["overlaps"]) == 1
+        assert result["summary"]["errors"] == 1
+
+    def test_two_overlaps_and_one_unreadable(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        slide = one_slide_prs.slides[0]
+        # 2 つの overlap 警告が生じる 3-way 重なり配置 (A-B, A-C, B-C の 3 組みで
+        # すべて大きな area を持つように調整)
+        _add_rect(slide, 1.0, 1.0, 3.0, 2.0, name="A")
+        _add_rect(slide, 2.0, 1.5, 3.0, 2.0, name="B")
+        _add_rect(slide, 6.0, 1.0, 3.0, 2.0, name="C")
+        _add_rect(slide, 7.0, 1.5, 3.0, 2.0, name="D")
+        # unreadable 警告 (6pt)
+        _add_textbox(slide, 0.5, 6.0, 3.0, 0.3, "tiny", font_pt=6, name="TinyBox")
+
+        result = check_deck_extended(one_slide_prs)
+        slide0 = result["slides"][0]
+        assert len(slide0["overlaps"]) == 2
+        assert result["summary"]["errors"] == 2
+        assert result["summary"]["warnings"] == 1
+
+
+# ---------------------------------------------------------------------------
+# paragraph-level font sizing (Issue #23)
+# ---------------------------------------------------------------------------
+
+
+class TestParagraphSizeResolution:
+    """段落単位の font サイズ解決と overflow 判定."""
+
+    def test_mixed_size_paragraphs_no_false_overflow(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 24pt 1行 + 10pt 1行 が収まる十分な高さの box
+        # 24pt → ≒ 0.40" 、10pt → ≒ 0.17"、合計 ≒ 0.57"
+        # 旧実装は 24pt × 2 行で ≒ 0.80" と過大評価し false overflow になる。
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tf = tb.text_frame
+        tf.word_wrap = True
+        # 最初の paragraph を 24pt タイトル
+        tf.text = "Title"
+        tf.paragraphs[0].runs[0].font.size = Pt(24)
+        # 2 段落目を 10pt body
+        p2 = tf.add_paragraph()
+        r2 = p2.add_run()
+        r2.text = "body"
+        r2.font.size = Pt(10)
+        tb.name = "MixedBox"
+
+        findings = check_text_overflow(one_slide_prs)
+        # MixedBox に text_overflow finding は出てはならない
+        matched = [f for f in findings if f.shape_name == "MixedBox"]
+        assert matched == []
+
+    def test_defrpr_only_size_detected(self, one_slide_prs: Presentation) -> None:
+        from lxml import etree
+
+        slide = one_slide_prs.slides[0]
+        tb = slide.shapes.add_textbox(
+            Inches(1.0), Inches(1.0), Inches(6.0), Inches(1.0)
+        )
+        tf = tb.text_frame
+        tf.text = "hello"
+        para = tf.paragraphs[0]
+        # run レベル size を除去
+        for run in para.runs:
+            run.font.size = None
+        # <a:pPr><a:defRPr sz="2400"/></a:pPr> を手動で付与 (24pt)
+        a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+        nsmap = {"a": a_ns}
+        p_elem = para._p
+        # 既存 pPr を削除してから新たに差し込む
+        for existing in p_elem.findall(f"{{{a_ns}}}pPr"):
+            p_elem.remove(existing)
+        p_pr = etree.SubElement(p_elem, f"{{{a_ns}}}pPr")
+        p_elem.insert(0, p_pr)
+        etree.SubElement(p_pr, f"{{{a_ns}}}defRPr", {"sz": "2400"})
+
+        # helper が defRPr 経由で 24pt を返すこと
+        eff = _effective_paragraph_size(para, default_pt=18.0)
+        assert eff == pytest.approx(24.0)
+
+    def test_single_size_frame_still_detects_overflow(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 既存挙動の回帰: 18pt 長文が小さな box からあふれる
+        slide = one_slide_prs.slides[0]
+        long_jp = (
+            "これは非常に長い日本語のテキストであり、"
+            "指定された小さなテキストボックスには到底収まらない分量である。"
+        )
+        _add_textbox(slide, 1.0, 1.0, 2.0, 0.5, long_jp, font_pt=18, name="OverflowBox")
+        findings = check_text_overflow(one_slide_prs)
+        assert any(f.shape_name == "OverflowBox" for f in findings)

@@ -238,17 +238,83 @@ def _iter_runs(text_frame) -> List[Any]:
     return runs
 
 
-def _dominant_font_size(text_frame, default_pt: float = 18.0) -> float:
-    """text_frame 内で最大の font.size (pt) を返す.
+# OOXML DrawingML 名前空間。pPr / defRPr の lxml 検索で使う。
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
-    いずれの run にも明示サイズが無ければ ``default_pt`` を返す。
+
+def _pptx_defrpr_size(paragraph) -> Optional[float]:
+    """``<a:pPr><a:defRPr sz="2400"/></a:pPr>`` から pt 値を解決する.
+
+    OOXML では ``sz`` は 1/100 pt 単位。未設定の場合は ``None`` を返す。
     """
-    max_pt: Optional[float] = None
-    for run in _iter_runs(text_frame):
+    try:
+        p_pr = paragraph._pPr  # type: ignore[attr-defined]
+    except Exception:
+        p_pr = None
+    if p_pr is None:
+        return None
+    defrpr = p_pr.find(f"{{{_A_NS}}}defRPr")
+    if defrpr is None:
+        return None
+    sz = defrpr.get("sz")
+    if sz is None:
+        return None
+    try:
+        return int(sz) / 100.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _effective_paragraph_size(paragraph, default_pt: float = 18.0) -> float:
+    """paragraph の実効フォントサイズ (pt) を解決する.
+
+    優先順:
+        1. paragraph 内 run の最大 ``font.size`` (run に明示されたもの)
+        2. ``paragraph.font.size`` (paragraph の ``rPr`` 由来)
+        3. ``pPr/defRPr/@sz`` (段落既定値)
+        4. ``default_pt`` (フォールバック)
+
+    ``add_auto_fit_textbox`` のように ``defRPr`` にのみサイズを書き込む
+    経路でも正しく pt を抽出できるよう (3) を明示的にサポートする。
+    """
+    # (1) run レベル
+    max_run_pt: Optional[float] = None
+    for run in paragraph.runs:
         size = run.font.size
         if size is None:
             continue
         pt = size.pt
+        if max_run_pt is None or pt > max_run_pt:
+            max_run_pt = pt
+    if max_run_pt is not None:
+        return max_run_pt
+
+    # (2) paragraph.font.size
+    try:
+        pf_size = paragraph.font.size
+    except Exception:
+        pf_size = None
+    if pf_size is not None:
+        return pf_size.pt
+
+    # (3) pPr/defRPr/@sz
+    defrpr_pt = _pptx_defrpr_size(paragraph)
+    if defrpr_pt is not None:
+        return defrpr_pt
+
+    # (4) デフォルト
+    return default_pt
+
+
+def _dominant_font_size(text_frame, default_pt: float = 18.0) -> float:
+    """text_frame 内の段落で最大の実効フォントサイズ (pt) を返す.
+
+    段落単位の解決には ``_effective_paragraph_size`` を利用する。メッセージ
+    文字列の表示用 (代表サイズ) に残してあるユーティリティである。
+    """
+    max_pt: Optional[float] = None
+    for para in text_frame.paragraphs:
+        pt = _effective_paragraph_size(para, default_pt=default_pt)
         if max_pt is None or pt > max_pt:
             max_pt = pt
     if max_pt is None:
@@ -264,6 +330,39 @@ def _full_text(text_frame) -> str:
     return "\n".join(lines)
 
 
+def _paragraph_text(paragraph) -> str:
+    """paragraph 内の全 run テキストを連結して返す."""
+    return "".join(run.text for run in paragraph.runs)
+
+
+def _estimate_frame_needed_height(
+    text_frame,
+    usable_width: float,
+    default_pt: float = 18.0,
+) -> Tuple[float, float]:
+    """段落単位で推定高さを合算した ``(total_in, max_pt)`` を返す.
+
+    段落ごとに ``_effective_paragraph_size`` で実効 pt を解決し、その pt
+    で ``estimate_text_height`` を呼び合算する。空段落も 1 行分の高さ
+    (pt × 0.0139 × 1.2) を確保する。代表サイズとして最大 pt も返す。
+    """
+    total = 0.0
+    max_pt: Optional[float] = None
+    paragraphs = list(text_frame.paragraphs)
+    for para in paragraphs:
+        pt = _effective_paragraph_size(para, default_pt=default_pt)
+        if max_pt is None or pt > max_pt:
+            max_pt = pt
+        text = _paragraph_text(para)
+        if text:
+            total += estimate_text_height(text, usable_width, pt)
+        else:
+            total += pt * 0.0139 * 1.2
+    if max_pt is None:
+        max_pt = default_pt
+    return total, max_pt
+
+
 def check_text_overflow(
     presentation: Presentation,
     *,
@@ -272,8 +371,10 @@ def check_text_overflow(
 ) -> List[ValidationFinding]:
     """テキストフレームの高さ溢れを検出する.
 
-    各 text frame の幅 (左右 0.05" マージン合計) に基づき、推定文字高さが
-    frame_height × (1 + tolerance/100) を超える場合に ``error`` finding を返す。
+    各 text frame の幅 (左右 0.05" マージン合計) に基づき、段落単位で
+    有効フォントサイズを解決し、段落ごとの推定高さを合算する。合計が
+    frame_height × (1 + tolerance/100) を超える場合に ``error`` finding
+    を返す。
     """
     findings: List[ValidationFinding] = []
     tolerance_factor = 1 + overflow_tolerance_pct / 100.0
@@ -294,18 +395,20 @@ def check_text_overflow(
             if not text.strip():
                 continue
 
-            font_size = _dominant_font_size(tf)
             usable_width = max(0.1, frame_width - 0.10)
-            needed_height = estimate_text_height(text, usable_width, font_size)
+            needed_height, font_size = _estimate_frame_needed_height(
+                tf, usable_width
+            )
             max_allowed = frame_height * tolerance_factor
 
             if needed_height > max_allowed:
-                # 収まる最大 pt を 0.5pt 刻みで探索する
+                # 収まる最大代表 pt を 0.5pt 刻みで探索する。段落間の比率を
+                # 保って一様スケールする想定で needed_height に線形近似する。
                 fit_pt: Optional[float] = None
                 candidate = font_size - 0.5
                 while candidate >= min_readable_pt:
-                    h = estimate_text_height(text, usable_width, candidate)
-                    if h <= frame_height:
+                    scale = candidate / font_size if font_size > 0 else 1.0
+                    if needed_height * scale <= frame_height:
                         fit_pt = candidate
                         break
                     candidate -= 0.5
@@ -328,7 +431,7 @@ def check_text_overflow(
                         message=(
                             f"text overflow: needed {needed_height:.2f}\" "
                             f"> frame {frame_height:.2f}\" "
-                            f"(font {font_size:.1f}pt, width {frame_width:.2f}\")"
+                            f"(max font {font_size:.1f}pt, width {frame_width:.2f}\")"
                         ),
                         suggested_fix=suggested,
                     )
@@ -361,14 +464,26 @@ def check_unreadable_text(
 
             tf = shape.text_frame
             smallest: Optional[float] = None
-            for run in _iter_runs(tf):
-                size = run.font.size
-                if size is None:
-                    continue
-                pt = size.pt
-                if pt < min_readable_pt:
-                    if smallest is None or pt < smallest:
-                        smallest = pt
+            # run に明示された size を優先、無い場合は段落の実効サイズを見る
+            for para in tf.paragraphs:
+                seen_run_size = False
+                for run in para.runs:
+                    size = run.font.size
+                    if size is None:
+                        continue
+                    seen_run_size = True
+                    pt = size.pt
+                    if pt < min_readable_pt:
+                        if smallest is None or pt < smallest:
+                            smallest = pt
+                if not seen_run_size:
+                    # 段落レベル (paragraph.font.size / defRPr) を評価する
+                    # defRPr 経路で書かれた小フォントも確実に検出する
+                    eff_pt = _effective_paragraph_size(para, default_pt=min_readable_pt)
+                    # default_pt に閾値を入れているので defRPr 等で明示されない限り検出しない
+                    if eff_pt < min_readable_pt:
+                        if smallest is None or eff_pt < smallest:
+                            smallest = eff_pt
 
             if smallest is not None:
                 findings.append(
@@ -437,8 +552,9 @@ def check_divider_collision(
                 if not text.strip():
                     continue
                 frame_width = max(0.1, (s_right - s_left) - 0.10)
-                font_size = _dominant_font_size(tf)
-                needed_height = estimate_text_height(text, frame_width, font_size)
+                needed_height, font_size = _estimate_frame_needed_height(
+                    tf, frame_width
+                )
                 projected_bottom = s_top + needed_height
                 limit = d_top - 0.02
 
@@ -475,6 +591,11 @@ def _axis_groups(
     """(index, axis_value) を tolerance 以内で clustering して返す.
 
     返り値は各 group の index リスト。3 要素以上のクラスタのみ返す。
+
+    clustering は group 先頭 (anchor) との差分で single-linkage 判定を
+    行う。running-mean 更新はドリフトを生む (例: tolerance=0.1 で
+    ``[0.0, 0.05, 0.10, 0.15, 0.20]`` が全て同一 group に吸収される)
+    ため採用しない。
     """
     if not values:
         return []
@@ -482,9 +603,8 @@ def _axis_groups(
     groups: List[List[Tuple[int, float]]] = []
     current: List[Tuple[int, float]] = [sorted_vals[0]]
     for item in sorted_vals[1:]:
-        # 現在グループの平均値との差で判定する
-        avg = sum(v for _, v in current) / len(current)
-        if abs(item[1] - avg) <= tolerance:
+        anchor = current[0][1]
+        if abs(item[1] - anchor) <= tolerance:
             current.append(item)
         else:
             groups.append(current)
@@ -629,6 +749,22 @@ def check_deck_extended(
 
     既存 ``check_slide_overlaps`` の警告文字列を ``overlaps`` と
     ``out_of_bounds`` に分割して格納する (既存キーは文字列リストのまま)。
+
+    Severity mapping — ``summary`` の各カウンタに寄与するカテゴリは以下のとおり:
+
+    - ``errors``:
+        - ``overlaps`` (``check_slide_overlaps`` 由来の overlap 警告)
+        - ``out_of_bounds`` (slide 外に出ている shape)
+        - ``text_overflow`` (``check_text_overflow``)
+        - ``divider_collision`` (``check_divider_collision``)
+    - ``warnings``:
+        - ``unreadable_text`` (``check_unreadable_text``)
+    - ``infos``:
+        - ``inconsistent_gaps`` (``check_inconsistent_gaps``)
+
+    CI ゲートで ``summary.errors == 0`` を要求する場合、overlap / out_of_bounds
+    を含めて error と扱う必要があるため、本関数は legacy の文字列リスト長も
+    errors に加算する。
     """
     slide_w = presentation.slide_width / 914400
     slide_h = presentation.slide_height / 914400
@@ -682,8 +818,12 @@ def check_deck_extended(
 
     slides_out = [by_slide[i] for i in sorted(by_slide.keys())]
 
-    # summary: ValidationFinding 由来の severity を集計する
+    # summary: ValidationFinding 由来 + legacy (overlaps / out_of_bounds) を集計する。
+    # 詳細な severity mapping は docstring 参照。
     errors = sum(1 for f in text_overflow + divider if f.severity == "error")
+    for slide_data in slides_out:
+        errors += len(slide_data["overlaps"])
+        errors += len(slide_data["out_of_bounds"])
     warnings_count = sum(1 for f in unreadable if f.severity == "warning")
     infos = sum(1 for f in gaps if f.severity == "info")
 
