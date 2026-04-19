@@ -10,10 +10,13 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
+from pptx.enum.text import MSO_ANCHOR
+
 from pptx_mcp_server.engine.validation import (
     ValidationFinding,
     _axis_groups,
     _effective_paragraph_size,
+    _projected_text_range,
     check_deck_extended,
     check_divider_collision,
     check_inconsistent_gaps,
@@ -445,3 +448,229 @@ class TestParagraphSizeResolution:
         _add_textbox(slide, 1.0, 1.0, 2.0, 0.5, long_jp, font_pt=18, name="OverflowBox")
         findings = check_text_overflow(one_slide_prs)
         assert any(f.shape_name == "OverflowBox" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Issue #44: unreadable whitelist by heuristic and explicit names
+# ---------------------------------------------------------------------------
+
+
+class TestUnreadableWhitelistExtended:
+    """``check_unreadable_text`` の whitelist_names / heuristic 除外の検証."""
+
+    def test_japanese_footer_heuristic_excluded(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 脚注: スライド底辺から 0.6" 以内 (y=7.1, slide_h=7.5 → top は 7.1, bbox 完全に下 0.4")
+        # 6pt (= min_readable_pt - 2) は閾値 min_readable_pt - 1 を下回るため
+        # ヒューリスティックで除外されない。フォント 7pt (= 8 - 1) に調整して
+        # フッタ ヒューリスティック該当にする。
+        slide = one_slide_prs.slides[0]
+        _add_textbox(
+            slide, 0.9, 7.1, 3.0, 0.3, "出典: 社内資料",
+            font_pt=7, name="脚注",
+        )
+        findings = check_unreadable_text(one_slide_prs)
+        assert findings == []
+
+    def test_japanese_footer_6pt_still_flagged_by_heuristic(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 6pt は min_readable_pt - 1 を下回るので heuristic は救わない。
+        # ただし明示 whitelist_names=["脚注"] を渡せば除外できることを次のテストで担保。
+        slide = one_slide_prs.slides[0]
+        _add_textbox(
+            slide, 0.9, 7.1, 3.0, 0.3, "出典: 社内資料",
+            font_pt=6, name="脚注",
+        )
+        findings = check_unreadable_text(one_slide_prs)
+        # 6pt の「脚注」は heuristic の font しきい値を外れるため警告が出る
+        assert len(findings) == 1
+        assert findings[0].shape_name == "脚注"
+
+    def test_japanese_footer_6pt_whitelist_excluded(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # whitelist_names に "脚注" を指定すれば 6pt でも skip される
+        slide = one_slide_prs.slides[0]
+        _add_textbox(
+            slide, 0.9, 7.1, 3.0, 0.3, "出典: 社内資料",
+            font_pt=6, name="脚注",
+        )
+        findings = check_unreadable_text(
+            one_slide_prs, whitelist_names=["脚注", "フッター"]
+        )
+        assert findings == []
+
+    def test_midslide_small_text_still_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # mid-slide (y=3.0) にある 6pt text は heuristic で救われない
+        slide = one_slide_prs.slides[0]
+        _add_textbox(slide, 1.0, 3.0, 3.0, 0.5, "fact", font_pt=6, name="fact")
+        findings = check_unreadable_text(one_slide_prs)
+        assert len(findings) == 1
+        assert findings[0].shape_name == "fact"
+
+    def test_whitelist_matching_vs_non_matching(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # whitelist_names に合致するものは skip、合致しないものは flag される
+        slide = one_slide_prs.slides[0]
+        _add_textbox(slide, 1.0, 3.0, 3.0, 0.3, "tiny", font_pt=6, name="脚注_1")
+        _add_textbox(slide, 1.0, 4.0, 3.0, 0.3, "tiny", font_pt=6, name="Body_Small")
+        findings = check_unreadable_text(
+            one_slide_prs, whitelist_names=["脚注"]
+        )
+        names = [f.shape_name for f in findings]
+        assert "脚注_1" not in names
+        assert "Body_Small" in names
+
+    def test_english_regex_whitelist_regression(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 既存英語正規表現 (footer / page_number / source / footnote) が引き続き有効
+        slide = one_slide_prs.slides[0]
+        _add_textbox(
+            slide, 1.0, 3.0, 3.0, 0.3, "1",
+            font_pt=6, name="page_number_1",
+        )
+        findings = check_unreadable_text(one_slide_prs)
+        assert findings == []
+
+    def test_whitelist_names_case_insensitive(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 部分一致・大文字小文字を区別しないことを確認
+        slide = one_slide_prs.slides[0]
+        _add_textbox(
+            slide, 1.0, 3.0, 3.0, 0.3, "note",
+            font_pt=6, name="My_FOOTNOTE_Box",
+        )
+        findings = check_unreadable_text(
+            one_slide_prs, whitelist_names=["footnote"]
+        )
+        assert findings == []
+
+    def test_deck_extended_propagates_whitelist_names(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # check_deck_extended も whitelist_names を受け取り unreadable に伝搬する
+        slide = one_slide_prs.slides[0]
+        _add_textbox(slide, 1.0, 3.0, 3.0, 0.3, "tiny", font_pt=6, name="脚注")
+        result = check_deck_extended(one_slide_prs, whitelist_names=["脚注"])
+        assert result["slides"][0]["unreadable_text"] == []
+        assert result["summary"]["warnings"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #45: divider_collision anchor-aware projection
+# ---------------------------------------------------------------------------
+
+
+def _set_vertical_anchor(textbox, anchor) -> None:
+    """textbox の vertical_anchor を設定するヘルパ."""
+    textbox.text_frame.vertical_anchor = anchor
+
+
+class TestDividerCollisionAnchor:
+    """vertical_anchor に応じた collision 判定の検証 (Issue #45)."""
+
+    def test_bottom_anchored_no_collision(self, one_slide_prs: Presentation) -> None:
+        # McKinsey 風: title at y=0.45 h=0.5 (bottom at 0.95), anchor=bottom
+        # 長いタイトルが 2 行に折り返されるが bottom が divider top (0.95") に揃うため
+        # 実テキストは上方向に伸びて divider を超えない → no collision
+        slide = one_slide_prs.slides[0]
+        long_title = (
+            "これはスライドのアクションタイトルで必ず折り返される日本語テキスト"
+        )
+        tb = _add_textbox(
+            slide, 0.9, 0.45, 3.0, 0.5, long_title,
+            font_pt=14, name="Title",
+        )
+        _set_vertical_anchor(tb, MSO_ANCHOR.BOTTOM)
+        _add_rect(slide, 0.9, 0.95, 11.5, 0.02, name="Divider")
+
+        findings = check_divider_collision(one_slide_prs)
+        assert findings == [], f"unexpected findings: {[f.message for f in findings]}"
+
+    def test_top_anchored_collision_detected(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 同じ寸法で top-anchor は collision として検出される (回帰)
+        slide = one_slide_prs.slides[0]
+        long_title = (
+            "これはスライドのアクションタイトルで必ず折り返される日本語テキスト"
+        )
+        tb = _add_textbox(
+            slide, 0.9, 0.45, 3.0, 0.5, long_title,
+            font_pt=14, name="Title",
+        )
+        _set_vertical_anchor(tb, MSO_ANCHOR.TOP)
+        _add_rect(slide, 0.9, 0.95, 11.5, 0.02, name="Divider")
+
+        findings = check_divider_collision(one_slide_prs)
+        assert len(findings) >= 1
+        assert findings[0].shape_name == "Title"
+
+    def test_middle_anchored_collision_edge_case(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # middle-anchor で center=0.70", needed_height≈0.6 → range [0.40, 1.00]
+        # 1.00 が divider top 0.95 を越えるため collision
+        slide = one_slide_prs.slides[0]
+        long_title = (
+            "これはスライドのアクションタイトルで必ず折り返される日本語テキスト"
+        )
+        tb = _add_textbox(
+            slide, 0.9, 0.45, 3.0, 0.5, long_title,
+            font_pt=14, name="Title",
+        )
+        _set_vertical_anchor(tb, MSO_ANCHOR.MIDDLE)
+        _add_rect(slide, 0.9, 0.95, 11.5, 0.02, name="Divider")
+
+        findings = check_divider_collision(one_slide_prs)
+        assert len(findings) >= 1
+        assert findings[0].shape_name == "Title"
+
+    def test_bottom_anchored_short_text_no_collision(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # bottom-anchor + 短文は当然 collision なし
+        slide = one_slide_prs.slides[0]
+        tb = _add_textbox(
+            slide, 0.9, 0.45, 11.5, 0.5, "短題",
+            font_pt=14, name="Title",
+        )
+        _set_vertical_anchor(tb, MSO_ANCHOR.BOTTOM)
+        _add_rect(slide, 0.9, 0.95, 11.5, 0.02, name="Divider")
+
+        findings = check_divider_collision(one_slide_prs)
+        assert findings == []
+
+    def test_projected_text_range_helper(self, one_slide_prs: Presentation) -> None:
+        # _projected_text_range ヘルパの単体挙動を検証
+        slide = one_slide_prs.slides[0]
+        tb = _add_textbox(
+            slide, 0.9, 0.45, 3.0, 0.5, "x",
+            font_pt=14, name="Title",
+        )
+        tf = tb.text_frame
+
+        # TOP
+        tf.vertical_anchor = MSO_ANCHOR.TOP
+        top, bot = _projected_text_range(tb, tf, needed_height=0.6)
+        assert top == pytest.approx(0.45, abs=1e-3)
+        assert bot == pytest.approx(1.05, abs=1e-3)
+
+        # BOTTOM (s_bottom = 0.45 + 0.5 = 0.95)
+        tf.vertical_anchor = MSO_ANCHOR.BOTTOM
+        top, bot = _projected_text_range(tb, tf, needed_height=0.6)
+        assert top == pytest.approx(0.35, abs=1e-3)
+        assert bot == pytest.approx(0.95, abs=1e-3)
+
+        # MIDDLE (center = 0.70)
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        top, bot = _projected_text_range(tb, tf, needed_height=0.6)
+        assert top == pytest.approx(0.40, abs=1e-3)
+        assert bot == pytest.approx(1.00, abs=1e-3)
