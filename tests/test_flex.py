@@ -423,6 +423,116 @@ def test_padding_tight_fit_ok_then_over_budget():
     assert "9.00" in msg
 
 
+# ── #59: grow items' min_size over-budget ────────────────────────────
+
+def test_grow_min_over_budget_three_items_raises():
+    """3 × grow(grow=1, min_size=4) in 10" (padding=0, gap=0) は INVALID_PARAMETER で失敗する (#59).
+
+    remain=10、min_size 合計 12 > 10 なので ``_distribute_grow`` のクランプ
+    によってコンテナ外配置が発生する経路。先回りして弾く。
+    """
+    renders = [_recorder() for _ in range(3)]
+    items = [
+        FlexItem(sizing="grow", grow=1.0, min_size=4.0, render=renders[0][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=4.0, render=renders[1][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=4.0, render=renders[2][0]),
+    ]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row", gap=0.0, padding=0.0,
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    msg = str(excinfo.value)
+    # エラーメッセージは fixed/content over-budget と区別できる語彙を含む
+    assert "grow" in msg
+    assert "min_size" in msg
+    # 数値根拠 (合計 12、remain 10) を含む
+    assert "12.00" in msg
+    assert "10.00" in msg
+    # render は一度も呼ばれていない (早期 raise)
+    for _, calls in renders:
+        assert calls == []
+
+
+def test_grow_min_within_budget_allocates_evenly():
+    """2 × grow(grow=1, min_size=3) in 10" (padding=0, gap=0) は 5+5 で成功する.
+
+    min_size 合計 6 ≤ remain 10 なので、クランプ発動せず通常按分する。
+    """
+    renders = [_recorder() for _ in range(2)]
+    items = [
+        FlexItem(sizing="grow", grow=1.0, min_size=3.0, render=renders[0][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=3.0, render=renders[1][0]),
+    ]
+    allocs = add_flex_container(
+        slide=None,
+        items=items,
+        left=0.0, top=0.0, width=10.0, height=1.0,
+        direction="row", gap=0.0, padding=0.0,
+    )
+    assert _approx(allocs[0][2], 5.0)
+    assert _approx(allocs[1][2], 5.0)
+
+
+def test_grow_min_over_budget_with_fixed_raises():
+    """1 × fixed(2) + 2 × grow(grow=1, min_size=5) in 10" (gap=0) は raises.
+
+    fixed_total=2、remain=8、grow min 合計 10 > 8。
+    """
+    renders = [_recorder() for _ in range(3)]
+    items = [
+        FlexItem(sizing="fixed", size=2.0, render=renders[0][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=5.0, render=renders[1][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=5.0, render=renders[2][0]),
+    ]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row", gap=0.0, padding=0.0,
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    msg = str(excinfo.value)
+    assert "grow" in msg
+    assert "min_size" in msg
+    # remain=8、min 合計=10
+    assert "10.00" in msg
+    assert "8.00" in msg
+    for _, calls in renders:
+        assert calls == []
+
+
+def test_grow_min_over_budget_column_direction_raises():
+    """direction='column' でも同じチェックが有効である (縦軸).
+
+    3 × grow(min_size=4) in height=10" → 合計 12 > 10 で raises。
+    """
+    renders = [_recorder() for _ in range(3)]
+    items = [
+        FlexItem(sizing="grow", grow=1.0, min_size=4.0, render=renders[0][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=4.0, render=renders[1][0]),
+        FlexItem(sizing="grow", grow=1.0, min_size=4.0, render=renders[2][0]),
+    ]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=1.0, height=10.0,
+            direction="column", gap=0.0, padding=0.0,
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    msg = str(excinfo.value)
+    assert "grow" in msg
+    assert "min_size" in msg
+    assert "height" in msg
+    for _, calls in renders:
+        assert calls == []
+
+
 def test_render_receives_correct_args():
     """render コールバックが allocations と一致する引数で呼ばれる."""
     render, calls = _recorder()

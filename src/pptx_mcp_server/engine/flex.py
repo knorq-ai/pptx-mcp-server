@@ -163,8 +163,10 @@ def add_flex_container(
 
     Raises:
         EngineError: ``align`` が ``"stretch"`` 以外のとき
-            (``INVALID_PARAMETER``)、もしくは fixed+content の合計が
-            usable_main を超過しているとき。
+            (``INVALID_PARAMETER``)、fixed+content の合計が usable_main を
+            超過しているとき、または grow 項目の ``min_size`` 合計が残余
+            予算 (usable_main - fixed_total - content_total) を超過して
+            いるとき (#59)。
     """
     # #24: MVP 実装は cross 軸の intrinsic サイズを測定しないため、``center``・
     # ``start``・``end`` を本来の意味で実装できない。従来はサイレントに
@@ -226,6 +228,33 @@ def add_flex_container(
     remain = max(0.0, usable_main - declared_total)
 
     grow_indices = [i for i, it in enumerate(items) if it.sizing == "grow"]
+
+    # #59: grow 項目の min_size 合計が残余予算を超える場合、``_distribute_grow``
+    # は各項目に宣言された min_size をクランプとして配り続け、結果として
+    # 合計が usable_main を超えてもサイレントに配置してしまう (items が
+    # コンテナ外にはみ出す)。#25 と同じ失敗モードだが、``fixed`` / ``content``
+    # の over-budget チェックでは検出できない経路である。ここで先回りして
+    # ``INVALID_PARAMETER`` で失敗させ、エージェントに修正の糸口を与える。
+    grow_min_total = sum(max(items[i].min_size, 0.0) for i in grow_indices)
+    if grow_min_total > remain + _OVER_BUDGET_EPS:
+        gap_total = gap * max(n - 1, 0)
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            (
+                "Flex container over-budget: "
+                f"grow items' min_size total={grow_min_total:.2f} "
+                f"exceeds remaining budget={remain:.2f} "
+                f"(= usable_main={usable_main:.2f} "
+                f"- fixed_total={fixed_total:.2f} "
+                f"- content_total={content_total:.2f}; "
+                f"{'width' if direction == 'row' else 'height'}="
+                f"{(width if direction == 'row' else height):.2f} "
+                f"- 2*padding={2 * padding:.2f} "
+                f"- gap*(n-1)={gap_total:.2f}). "
+                "Reduce min_size or increase container width."
+            ),
+        )
+
     grow_sizes = _distribute_grow(items, grow_indices, remain)
 
     # 各 item の main 軸サイズを決定
