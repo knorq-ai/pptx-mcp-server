@@ -186,6 +186,8 @@ pip install -e .
 python -m pytest tests/ -v
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions.
+
 ## License
 
 MIT -- see [LICENSE](LICENSE) for details.
