@@ -23,6 +23,7 @@ from pptx_mcp_server.engine.validation import (
     check_inconsistent_gaps,
     check_slide_overlaps,
     check_text_overflow,
+    check_title_wrap,
     check_unreadable_text,
 )
 
@@ -871,3 +872,143 @@ class TestOverlapMinAreaFilter:
         # これは regression: container 内は intentional overlap。
         msgs = [w for w in warnings if "OVERLAP" in w]
         assert not msgs, f"Container overlap should be skipped; got: {warnings}"
+
+
+# ---------------------------------------------------------------------------
+# Issue #80: check_title_wrap
+# ---------------------------------------------------------------------------
+
+
+class TestTitleWrap:
+    """``check_title_wrap`` がタイトルゾーンの意図せぬ折り返しを検出することを検証する."""
+
+    def test_title_14pt_wraps_to_two_lines_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # タイトルゾーン (y=0.45) に 14pt で長いテキスト → 折り返し 2 行以上
+        slide = one_slide_prs.slides[0]
+        long_title = (
+            "Mac乗り換え検討者に対してLenovoはほぼ不可視 — "
+            "「Macに匹敵する体験をWindowsで」のナラティブが不在である"
+            "ため戦略的な再検討が必要"
+        )
+        _add_textbox(
+            slide, 0.9, 0.45, 11.533, 0.55, long_title,
+            font_pt=14, name="Title",
+        )
+        findings = check_title_wrap(one_slide_prs)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.category == "title_wrap"
+        assert f.severity == "warning"
+        assert f.shape_name == "Title"
+        # message に行数が含まれる
+        assert "lines" in f.message
+        # 修正案が含まれる
+        assert f.suggested_fix != ""
+
+    def test_title_10pt_single_line_no_finding(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 10pt は threshold (14pt) 未満なのでサブタイトル扱い。短いテキスト
+        # は 1 行なので no finding。
+        slide = one_slide_prs.slides[0]
+        _add_textbox(
+            slide, 0.9, 0.45, 11.533, 0.55, "短いサブタイトル",
+            font_pt=10, name="Subtitle",
+        )
+        findings = check_title_wrap(one_slide_prs)
+        assert findings == []
+
+    def test_text_outside_title_zone_skipped(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # y=3.0 は body 領域。折り返しても title_wrap は報告しない。
+        slide = one_slide_prs.slides[0]
+        long_title = (
+            "Mac乗り換え検討者に対してLenovoはほぼ不可視 — "
+            "「Macに匹敵する体験をWindowsで」のナラティブが不在"
+        )
+        _add_textbox(
+            slide, 0.9, 3.0, 11.533, 0.55, long_title,
+            font_pt=14, name="BodyTitle",
+        )
+        findings = check_title_wrap(one_slide_prs)
+        assert findings == []
+
+    def test_subtitle_10pt_two_lines_within_max_no_finding(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 10pt サブタイトル扱い。max_lines_subtitle=2 で 2 行までは OK。
+        slide = one_slide_prs.slides[0]
+        # 10pt で 4" 幅の box に CJK 多めを入れると ~2 行になる長さ
+        subtitle_text = "これは二行に折り返されるサブタイトルのテキストである内容"
+        _add_textbox(
+            slide, 0.9, 0.45, 4.0, 0.55, subtitle_text,
+            font_pt=10, name="Subtitle",
+        )
+        findings = check_title_wrap(
+            one_slide_prs,
+            max_lines_title=1,
+            max_lines_subtitle=2,
+        )
+        # 2 行以内なので finding なし
+        subtitle_findings = [f for f in findings if f.shape_name == "Subtitle"]
+        assert subtitle_findings == []
+
+    def test_subtitle_10pt_three_lines_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 10pt サブタイトルが 3 行以上に折り返す → max_lines_subtitle=2 を超え finding
+        slide = one_slide_prs.slides[0]
+        long_subtitle = (
+            "これは非常に長いサブタイトルの例であり三行以上に折り返されるほどの"
+            "文字数を含んでいることで max_lines_subtitle を確実に超える設計である。"
+            "さらに追加の説明を加えて行数を押し上げる追加テキスト。"
+        )
+        _add_textbox(
+            slide, 0.9, 0.45, 4.0, 0.55, long_subtitle,
+            font_pt=10, name="Subtitle",
+        )
+        findings = check_title_wrap(
+            one_slide_prs,
+            max_lines_title=1,
+            max_lines_subtitle=2,
+        )
+        subtitle_findings = [f for f in findings if f.shape_name == "Subtitle"]
+        assert len(subtitle_findings) == 1
+        assert subtitle_findings[0].severity == "warning"
+        assert subtitle_findings[0].category == "title_wrap"
+
+
+class TestTitleWrapIntegration:
+    """check_deck_extended への統合挙動."""
+
+    def test_title_wrap_key_present_and_counted_in_warnings(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        slide = one_slide_prs.slides[0]
+        long_title = (
+            "Mac乗り換え検討者に対してLenovoはほぼ不可視 — "
+            "「Macに匹敵する体験をWindowsで」のナラティブが不在である"
+            "ため戦略的な再検討が必要"
+        )
+        _add_textbox(
+            slide, 0.9, 0.45, 11.533, 0.55, long_title,
+            font_pt=14, name="Title",
+        )
+        result = check_deck_extended(one_slide_prs)
+        slide0 = result["slides"][0]
+        assert "title_wrap" in slide0
+        assert len(slide0["title_wrap"]) == 1
+        assert slide0["title_wrap"][0]["category"] == "title_wrap"
+        # summary.warnings に加算されている
+        assert result["summary"]["warnings"] >= 1
+
+    def test_no_title_wrap_no_warnings_from_this_category(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        # 空の deck: title_wrap 0 件、summary.warnings は 0
+        result = check_deck_extended(one_slide_prs)
+        assert result["slides"][0]["title_wrap"] == []
+        assert result["summary"]["warnings"] == 0
