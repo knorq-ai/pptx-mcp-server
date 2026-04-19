@@ -86,10 +86,20 @@ or a sibling module that is only imported when the CLI starts.
 
 ## File safety
 
-`save_pptx` is atomic (temp-file-then-rename) but does NOT guard against
-concurrent writes from multiple processes. The single-writer contract is:
-at most one process mutates a given `.pptx` path at a time. Consumers that
-need multi-writer coordination should layer their own locking on top.
+`save_pptx` performs an atomic temp-file-then-rename (via `os.replace`), so
+a crash during save preserves the original file. This is atomicity, not
+durability: the new file's contents may still be in page cache when the call
+returns. For crash-durable saves, pass `fsync=True` — this adds an I/O
+barrier on the temp file and the containing directory before returning.
+
+The default is `fsync=False` because most deck-generation workflows don't
+need power-loss durability (the process can re-run). Enable fsync when:
+- Saving a long-running batch result that would be expensive to regenerate
+- Writing to a mount that buffers aggressively
+- Required by a compliance/archival policy
+
+Concurrency contract: at most one process mutates a given .pptx path at a
+time. Cross-process locking is not provided.
 
 ## Pull request flow
 

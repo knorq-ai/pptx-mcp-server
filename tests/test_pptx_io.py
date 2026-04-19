@@ -5,12 +5,14 @@ Unit tests for pptx_io -- file operations and color parsing.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 from pptx import Presentation
 from pptx.util import Inches
 from pptx.dml.color import RGBColor
 
+from pptx_mcp_server.engine import pptx_io
 from pptx_mcp_server.engine.pptx_io import (
     EngineError,
     ErrorCode,
@@ -199,3 +201,126 @@ class TestSavePptx:
 
         leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
         assert leftovers == []
+
+
+class TestSavePptxFsync:
+    """fsync=True opt-in path must call os.fsync; default must not."""
+
+    @staticmethod
+    def _install_fsync_counter(monkeypatch):
+        """Patch os.fsync via the pptx_io module's reference so the call site
+        picks up the mock (the module does `import os` then calls `os.fsync`,
+        so patching `os.fsync` on the shared `os` module is what the call
+        site sees)."""
+        calls = {"count": 0, "fds": []}
+        real_fsync = os.fsync
+
+        def mock_fsync(fd):
+            calls["count"] += 1
+            calls["fds"].append(fd)
+            return real_fsync(fd)
+
+        # Patch on the shared os module — pptx_io does `import os` so the
+        # attribute lookup goes through this module.
+        monkeypatch.setattr(os, "fsync", mock_fsync)
+        # Also patch via the engine module's `os` binding explicitly for
+        # robustness against any future `from os import fsync`-style import.
+        monkeypatch.setattr(pptx_io.os, "fsync", mock_fsync, raising=True)
+        return calls
+
+    def test_fsync_true_calls_fsync(self, tmp_path, monkeypatch):
+        """fsync=True must call os.fsync at least once (temp file). On
+        non-Windows, also calls it for the containing directory (>=2)."""
+        calls = self._install_fsync_counter(monkeypatch)
+
+        prs = Presentation()
+        path = str(tmp_path / "durable.pptx")
+        save_pptx(prs, path, fsync=True)
+
+        assert os.path.exists(path)
+        assert calls["count"] >= 1, "fsync=True must fsync the temp file"
+        if sys.platform != "win32":
+            assert calls["count"] >= 2, (
+                "fsync=True on POSIX must fsync both temp file and directory"
+            )
+
+    def test_fsync_false_does_not_call_fsync(self, tmp_path, monkeypatch):
+        """Default (fsync=False) must not invoke os.fsync."""
+        calls = self._install_fsync_counter(monkeypatch)
+
+        prs = Presentation()
+        path = str(tmp_path / "fast.pptx")
+        save_pptx(prs, path, fsync=False)
+
+        assert os.path.exists(path)
+        assert calls["count"] == 0, (
+            "default save must not impose an fsync barrier"
+        )
+
+    def test_fsync_default_is_false(self, tmp_path, monkeypatch):
+        """Omitting the fsync kwarg must behave like fsync=False."""
+        calls = self._install_fsync_counter(monkeypatch)
+
+        prs = Presentation()
+        path = str(tmp_path / "default.pptx")
+        save_pptx(prs, path)  # no kwarg
+
+        assert os.path.exists(path)
+        assert calls["count"] == 0
+
+    def test_fsync_true_still_atomic_on_crash(self, tmp_path, monkeypatch):
+        """fsync=True must preserve the same atomicity guarantee: if
+        Presentation.save raises, the original file is untouched and no
+        temp leaks."""
+        path = tmp_path / "existing.pptx"
+        original_bytes = b"ORIGINAL CONTENT -- not a real pptx"
+        path.write_bytes(original_bytes)
+
+        prs = Presentation()
+
+        def boom(*_args, **_kwargs):
+            raise IOError("simulated mid-write failure")
+
+        monkeypatch.setattr(type(prs), "save", boom, raising=True)
+
+        with pytest.raises(IOError, match="simulated"):
+            save_pptx(prs, str(path), fsync=True)
+
+        # Original bytes preserved, no temp leak.
+        assert path.read_bytes() == original_bytes
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
+
+    def test_fsync_true_round_trips(self, tmp_path):
+        """fsync=True produces a valid, loadable PPTX (no regression)."""
+        prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+        layout = prs.slide_layouts[6]
+        prs.slides.add_slide(layout)
+
+        path = str(tmp_path / "durable_rt.pptx")
+        save_pptx(prs, path, fsync=True)
+
+        loaded = Presentation(path)
+        assert len(loaded.slides) == 1
+        leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+        assert leftovers == []
+
+    def test_fsync_true_skips_dir_fsync_on_windows(self, tmp_path, monkeypatch):
+        """On Windows, directory fsync is unsupported and must be skipped:
+        only the temp-file fsync runs (1 call total)."""
+        calls = self._install_fsync_counter(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "win32")
+        # pptx_io binds `import sys`; patch that reference too so the
+        # module's `sys.platform` check sees "win32".
+        monkeypatch.setattr(pptx_io.sys, "platform", "win32", raising=True)
+
+        prs = Presentation()
+        path = str(tmp_path / "win.pptx")
+        save_pptx(prs, path, fsync=True)
+
+        assert os.path.exists(path)
+        assert calls["count"] == 1, (
+            "on Windows, only the temp file is fsynced; directory fsync skipped"
+        )
