@@ -37,6 +37,52 @@ Or, if running from source:
 }
 ```
 
+## Use as a Python library
+
+`pptx-mcp-server` also ships a pure-Python engine you can drive directly,
+without starting an MCP server. The `engine` and `theme` modules have no
+dependency on the MCP SDK at import time, so you can build decks from scripts,
+notebooks, or batch jobs.
+
+Install it the same way you would any other package:
+
+```bash
+# From PyPI (once published)
+pip install pptx-mcp-server
+
+# From a local checkout (editable install during development)
+pip install -e /path/to/pptx-mcp-server
+```
+
+Then compose a deck by calling the engine functions directly:
+
+```python
+from pptx_mcp_server.engine.pptx_io import create_presentation, open_pptx
+from pptx_mcp_server.engine.shapes import add_textbox
+from pptx_mcp_server.engine.slides import add_slide
+from pptx_mcp_server.theme import MCKINSEY
+
+out = "deck.pptx"
+create_presentation(out, width_inches=13.333, height_inches=7.5)
+add_slide(out, layout_index=6)
+add_textbox(
+    out,
+    slide_index=0,
+    left=1.0, top=1.0, width=10.0, height=1.0,
+    text="Hello from pptx_mcp_server",
+    font_name=MCKINSEY.fonts.get("body", "Arial"),
+    font_size=24,
+    bold=True,
+)
+
+prs = open_pptx(out)
+print(f"Slides: {len(prs.slides)}")
+```
+
+The `mcp` SDK is still listed in `dependencies` so that the `pptx-mcp-server`
+entry point works out of the box, but nothing in `pptx_mcp_server.engine` or
+`pptx_mcp_server.theme` imports it — a CI guardrail test enforces this.
+
 ## Tools
 
 ### Presentation
