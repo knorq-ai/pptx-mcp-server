@@ -13,6 +13,7 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
 from pptx.oxml.ns import qn
 
+from ._validate import validate_auto_fit_geometry
 from .pptx_io import (
     EngineError, ErrorCode,
     open_pptx, save_pptx, _get_slide, _get_shape, _parse_color,
@@ -815,7 +816,20 @@ def add_auto_fit_textbox(
 
     Returns:
         ``(shape, actual_font_size)`` のタプル。テスト・デバッグ用途。
+
+    Raises:
+        EngineError: ``width``・``height``・``font_size_pt``・``min_size_pt``
+            が ``<= 0`` または NaN/inf のとき、または ``min_size_pt >
+            font_size_pt`` のとき (``INVALID_PARAMETER``, #85)。
     """
+    # #85: 不正な幾何/フォント指定は sile に通過させず entry で拒否する。
+    validate_auto_fit_geometry(
+        width=width,
+        height=height,
+        font_size_pt=font_size_pt,
+        min_size_pt=min_size_pt,
+    )
+
     usable_width = max(width - 2 * _AUTO_FIT_PADDING, 0.01)
 
     if wrap:
@@ -891,6 +905,11 @@ def add_auto_fit_textbox_file(
     """
     prs = open_pptx(file_path)
     slide = _get_slide(prs, slide_index)
+    # #84: ``save_pptx`` 後に identity 検索を行うと (``os.replace`` による
+    # 原子的 rename で) ``slide.shapes`` は新たに読み直された要素を返すため、
+    # 従来実装では常に ``shape_index=-1`` が返っていた。追加直前に末尾
+    # index を控える実装に修正する。
+    shape_index = len(slide.shapes)
     shape, actual_size = add_auto_fit_textbox(
         slide, text, left, top, width, height,
         font_name=font_name,
@@ -903,12 +922,6 @@ def add_auto_fit_textbox_file(
         truncate_with_ellipsis=truncate_with_ellipsis,
         wrap=wrap,
     )
-    # shape_index を決定 (slide 内で shape を線形検索)
-    shape_index = -1
-    for i, s in enumerate(slide.shapes):
-        if s is shape:
-            shape_index = i
-            break
     save_pptx(prs, file_path)
     return {
         "slide_index": slide_index,

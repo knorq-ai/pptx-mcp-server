@@ -845,3 +845,126 @@ class TestDeclarativeValidationFlow:
         assert "items[0]" in msg
         assert "min_size" in msg
         assert "max_size" in msg
+
+
+# -----------------------------------------------------------------------------
+# #85: fail-fast container geometry validation
+# -----------------------------------------------------------------------------
+
+
+class TestFlexContainerGeometryValidation:
+    """``add_flex_container`` が不正な container 幾何を拒否する (#85)."""
+
+    def _r(self):
+        return _recorder()[0]
+
+    def test_zero_width_rejected(self):
+        items = [FlexItem(sizing="grow", render=self._r())]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=0.0, height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_negative_width_rejected(self):
+        items = [FlexItem(sizing="grow", render=self._r())]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=-1.0, height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_zero_height_rejected(self):
+        items = [FlexItem(sizing="grow", render=self._r())]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=1.0, height=0.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "height" in str(exc.value)
+
+    def test_negative_height_rejected(self):
+        items = [FlexItem(sizing="grow", render=self._r())]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=1.0, height=-0.1,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "height" in str(exc.value)
+
+    def test_negative_padding_rejected(self):
+        items = [FlexItem(sizing="grow", render=self._r())]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                padding=-0.1,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "padding" in str(exc.value)
+
+    def test_negative_gap_rejected(self):
+        items = [
+            FlexItem(sizing="fixed", size=1.0, render=self._r()),
+            FlexItem(sizing="fixed", size=1.0, render=self._r()),
+        ]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                gap=-0.5,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "gap" in str(exc.value)
+
+    def test_nan_width_rejected(self):
+        items = [FlexItem(sizing="grow", render=self._r())]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=float("nan"), height=1.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "width" in str(exc.value)
+
+    def test_inf_gap_rejected(self):
+        items = [
+            FlexItem(sizing="fixed", size=1.0, render=self._r()),
+            FlexItem(sizing="fixed", size=1.0, render=self._r()),
+        ]
+        with pytest.raises(EngineError) as exc:
+            add_flex_container(
+                None, items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                gap=float("inf"),
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+        assert "gap" in str(exc.value)
+
+    def test_zero_padding_and_gap_boundary_valid(self):
+        """padding=0, gap=0 は合法 (境界値)."""
+        render, calls = _recorder()
+        items = [FlexItem(sizing="fixed", size=1.0, render=render)]
+        add_flex_container(
+            None, items,
+            left=0.0, top=0.0, width=2.0, height=1.0,
+            padding=0.0, gap=0.0,
+        )
+        assert len(calls) == 1
+
+    def test_tiny_boundary_width_ok(self):
+        """width=0.01 は通る."""
+        render, calls = _recorder()
+        items = [FlexItem(sizing="grow", render=render)]
+        add_flex_container(
+            None, items,
+            left=0.0, top=0.0, width=0.01, height=0.01,
+            padding=0.0, gap=0.0,
+        )
+        assert len(calls) == 1
