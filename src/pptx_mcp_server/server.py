@@ -40,11 +40,9 @@ or fails, the primary tool still succeeds — the render outcome is surfaced as
 a ``render_warning`` field in the result payload.
 """
 
-import concurrent.futures
 import json
-import os
 from dataclasses import fields
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -54,6 +52,12 @@ except ImportError as e:
         "Install with: pip install 'pptx-mcp-server[mcp]'"
     ) from e
 
+from ._envelope import _err, _error, _success, _success_with_render
+from ._render import (
+    _auto_render_enabled,
+    _auto_render_timeout,
+    _run_auto_render,
+)
 from .engine import (
     EngineError,
     ErrorCode,
@@ -100,329 +104,65 @@ from .engine import (
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
 INSTRUCTIONS = """
-# pptx-editor — Professional Presentation Builder
+# pptx-editor — PowerPoint Deck Builder
 
-This MCP server is a neutral capability provider. It exposes tools for
-building PowerPoint decks. It does not prescribe user-facing UX (whether
-to prompt the caller for a theme, when to confirm with a user, etc.) —
-that belongs in the agent's system prompt or the calling application.
+Neutral capability provider. Does not prescribe UX (confirmations, theme
+choice, etc.) — that belongs in the calling agent's system prompt.
 
-## Quick Start
-1. `pptx_create` — create a new 16:9 PPTX file
-2. `pptx_build_deck` — build an ENTIRE deck from a JSON spec (most efficient)
-3. `pptx_render_slide` — render to PNG for visual verification (optional,
-   requires LibreOffice)
+## Parameter Conventions
+- `colors`: 6-hex without `#` (e.g., `"2251FF"`).
+- coordinates / sizes: inches (float).
+- `*_pt`: point-unit sizes (e.g., `font_size_pt`, `min_size_pt`).
+- `*_json`: JSON-stringified arrays/objects (pass as string).
 
-## Recommended Workflow
-- Use `pptx_build_deck` for new decks (1 call = all slides, 1 file I/O).
-- Use `pptx_build_slide` to add individual slides.
-- Use `pptx_render_slide` explicitly to verify visually (returns PNG path
-  — read with Read tool). Composite tools do NOT auto-render by default.
-- Use `pptx_check_layout` after building to detect overlaps before delivery.
-- Use primitive tools (`pptx_edit_text`, `pptx_format_shape`) for fine-grained
-  edits.
+## Workflow
+- `pptx_create` — new 16:9 PPTX.
+- `pptx_build_deck` — build an ENTIRE deck from JSON spec (preferred).
+- `pptx_build_slide` — add single slides.
+- Primitive tools (`pptx_edit_text`, `pptx_format_shape`, …) for fine edits.
+- `pptx_check_layout` catches overlaps / overflow after building.
+- `pptx_render_slide` for optional PNG preview (needs LibreOffice + poppler).
 
-## Response Shape (v0.2.0+)
+## Available Themes
+Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
+Available: `mckinsey` (default), `deloitte`, `neutral`. For custom palettes
+pass explicit `font_color` / `fill_color` hex values on elements instead.
+
+## Response Shape
 All tools return a JSON string. Parse with `json.loads`:
-
 - Success: `{"ok": true, "result": ...}`
 - Error:   `{"ok": false, "error": {"code": "INVALID_PARAMETER",
             "parameter": "items_json", "message": "...", "hint": "..."}}`
 
-Error codes mirror `EngineError.code`: `INVALID_PARAMETER`, `FILE_NOT_FOUND`,
+`error.code` mirrors `EngineError.code`: `INVALID_PARAMETER`, `FILE_NOT_FOUND`,
 `SLIDE_NOT_FOUND`, `SHAPE_NOT_FOUND`, `INDEX_OUT_OF_RANGE`, `INVALID_PPTX`,
-`TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`.
+`TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`. On failure, read `error.hint`
+(if present) for recovery guidance.
 
-## Auto-Render (opt-in; off by default)
-Composite tools (`pptx_add_content_slide`, `pptx_build_slide`, etc.) can
-auto-render a PNG preview after each successful edit. This forks LibreOffice
-and adds ~1.5s per call, so it is **OFF** by default. Enable via the
-`PPTX_MCP_AUTO_RENDER=1` environment variable. Timeout is controlled by
-`PPTX_MCP_RENDER_TIMEOUT` (default 10 seconds). If rendering times out or
-fails, the primary tool still succeeds — the failure is reported in the
-result's `render_warning` field. For explicit rendering, use
-`pptx_render_slide` directly.
-
-## Available Themes
-Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
-Available: `mckinsey` (default), `deloitte`, `neutral`. Custom palettes are
-supported by passing explicit `primary_color` / `accent_color` hex values on
-individual elements (e.g., `font_color`, `fill_color`) instead of a named
-theme.
-
-## McKinsey-Style Layout Rules
-- **Slide dimensions**: 16:9 widescreen (13.333" x 7.5")
-- **Margins**: 0.9" left/right, content width = 11.533"
-- **Action title**: 22pt Arial Bold, max ~30 chars for single line (auto-shrinks if longer)
-- **Title zone**: 0.45" to 0.95" (bottom-anchored, divider line at 0.95")
-- **Body zone**: 1.15" to 6.5" — USE THE FULL 5.35" HEIGHT. Distribute content evenly.
-- **Footer zone**: 6.65" (source line + page number)
-- **Font**: Arial for everything (sans-serif works best with Japanese)
-
-## Color Palette (McKinsey-inspired, for reference)
-- Primary text: `051C2C` (dark navy)
-- Accent/highlight: `2251FF` (bright blue)
-- Secondary text: `666666`
-- Footnote: `A2AAAD`
-- Background alt: `F5F5F5`
-- Positive: `2E7D32` (green)
-- Negative: `C62828` (red)
-- Table border: `D0D0D0`
-
-## Table Formatting (McKinsey-style, automatic)
-- Dark navy header (`051C2C`) with white text
-- No vertical borders, thin horizontal borders only
-- Alternating row shading (`F5F5F5`)
-- Numbers right-aligned, text left-aligned
-- Use `pptx_add_table` or `"type": "table"` in build_slide spec
-
-## Data Density Guidelines (Consulting Quality)
-- **Fill every slide**: Body zone (1.15" to 6.5") should be 90%+ utilized. No large blank areas.
-- **Use small fonts for detail**: Tables at 9-10pt, bullet text at 10-12pt. Only titles at 22pt.
-- **Pack information**: A chart+sidebar slide should have 4+ text bullets AND a table in the sidebar. A table slide should have 8+ rows.
-- **Multi-zone layouts**: Combine chart (left 60%) + sidebar (right 40%) with title + bullets + table in the sidebar.
-- **Bullet blocks should describe, not list**: Each bullet should be a full sentence with specifics, not a 3-word fragment.
-- **For CAGR/growth annotations**: Use a floating `rounded_rectangle` shape badge, NOT a callout with arrow.
-
-## Common Pitfalls to Avoid
-1. **Text behind shapes**: Don't put text on a shape if you'll overlay other shapes on top. Use `pptx_add_textbox` for labels over background shapes.
-2. **Sparse slides**: Don't leave the bottom half empty. If you have 4 bullets, use the full body height — line spacing auto-distributes.
-3. **Long titles**: Keep action titles under 30 chars. The tool auto-shrinks and warns if too long.
-4. **Too many tool calls**: Use `pptx_build_deck` (1 call for whole deck) instead of individual `pptx_add_*` calls.
-5. **Arrows to nowhere**: Callout arrows must point at a specific data point. For general annotations (CAGR, labels), use a shaped textbox instead.
-
-## Slide Spec Format (for build_slide / build_deck)
-```json
-{
-  "layout": "content",        // "content" | "section_divider" | "blank"
-  "title": "Action title",    // for content/section_divider
-  "subtitle": "...",           // section_divider only
-  "background": "051C2C",     // optional hex color
-  "source": "Source: ...",     // optional footnote
-  "page_number": 1,           // optional
-  "elements": [
-    {"type": "textbox", "left": 0.9, "top": 1.2, "width": 11.5, "height": 0.3,
-     "text": "...", "font_size": 14, "font_color": "2251FF", "bold": true,
-     "alignment": "left", "vertical_anchor": "top"},
-    {"type": "shape", "shape_type": "rectangle", ...},
-    {"type": "table", "rows": [["H1","H2"],["v1","v2"]], "left": 0.9, "top": 3.0,
-     "width": 11.5, "col_widths": [0.5, 0.5]},
-    {"type": "kpi_row", "kpis": [{"value":"100","label":"Metric"}], "y": 1.2},
-    {"type": "bullet_block", "items": ["Point 1","Point 2"],
-     "left": 0.9, "top": 2.0, "width": 11.5, "height": 2.0},
-    {"type": "image", "image_path": "/path/img.png", "left": 1.0, "top": 1.0, "width": 3.0},
-    {"type": "chart", "chart_type": "stacked_column",
-     "left": 0.9, "top": 1.15, "width": 7.0, "height": 5.0,
-     "categories": ["2020","2021","2022"],
-     "series": [{"name":"Revenue","values":[10,20,30],"color":"2251FF"}],
-     "data_labels_show": true, "legend_position": "bottom"}
-  ]
-}
-```
-
-## Chart Element (for build_slide / pptx_add_chart)
-chart_type: bar, stacked_bar, stacked_bar_100, column, stacked_column, stacked_column_100, line, line_markers, pie, area, area_stacked, doughnut, radar.
-
-Key fields (all flat — no nesting):
-- `categories`: ["A","B","C"] — category labels
-- `series`: [{"name":"S1","values":[1,2,3],"color":"2251FF"}] — data series (color optional, auto-assigned from theme)
-- `data_labels_show`: true/false — show values on chart
-- `data_labels_position`: center, outside_end, inside_end, inside_base, above, below
-- `data_labels_number_format`: "#,##0", "0.0%", etc.
-- `legend_position`: bottom, top, right, left, null (hidden)
-- `axis_value_title`: "Revenue (M)" — Y-axis label
-- `axis_value_min/max/major_unit`: scale control
-- `axis_value_gridlines`: true/false
-- `gap_width`: 150 (bar gap), `overlap`: 100 (stacked)
-
-## Icon Element (for build_slide / pptx_add_icon)
-640 built-in vector icons. Use `pptx_list_icons` to browse, or use directly:
-```json
-{"type": "icon", "icon_id": "briefcase", "left": 2.0, "top": 3.0, "width": 0.8,
- "color": "2251FF", "outline_color": "051C2C"}
-```
-Common icons: briefcase, chart, person, globe, airplane, laptop, phone, car, building, arrow,
-calendar, clock, document, email, gear, handshake, key, lock, money, star, target, trophy.
-
-## Card Grid Element (for build_slide) — auto-balanced layout
-Use `card_grid` for 2×2 frameworks, feature grids, strategy cards, etc. Cards auto-size to fill the body zone.
-```json
-{"type": "card_grid", "cards": [
-  {"title": "Strategy 1", "bullets": ["Point A", "Point B"], "icon_id": "target", "icon_color": "2251FF"},
-  {"title": "Strategy 2", "body": "Description text", "icon_id": "globe"}
-]}
-```
-Each card: title (required), body or bullets, optional icon_id + icon_color.
-Grid auto-computes: 1-2 cards → 1 row, 3-4 → 2×2, 5-6 → 2×3, 7-9 → 3×3.
-
-## Connector Element (for build_slide / pptx_add_connector)
-```json
-{"type": "connector", "begin_x": 2.0, "begin_y": 3.5, "end_x": 6.0, "end_y": 5.0,
- "color": "accent", "end_arrow": "triangle", "dash_style": "dash"}
-```
-connector_type: straight (default), elbow, curve.
-Arrows: none, triangle, stealth, diamond, oval, open.
-dash_style: solid, dash, dot, dash_dot, long_dash.
-
-## Callout Element (for build_slide / pptx_add_callout)
-Annotation textbox + arrow pointing to target. Auto-places label if label_x/label_y omitted.
-```json
-{"type": "callout", "text": "+15% YoY", "target_x": 5.5, "target_y": 3.0,
- "font_color": "negative", "bg_color": "F5F5F5", "arrow_end": "stealth"}
-```
-
-## Rendering (Optional)
-`pptx_render_slide` requires LibreOffice. Install:
-- macOS: `brew install --cask libreoffice`
-- Ubuntu/Debian: `sudo apt install libreoffice`
-- Windows: Download from https://www.libreoffice.org/download/
+## Auto-Render (opt-in; OFF by default)
+Enable via `PPTX_MCP_AUTO_RENDER=1`; timeout (seconds) via
+`PPTX_MCP_RENDER_TIMEOUT` (default 10). On timeout/failure the primary tool
+still succeeds; the outcome surfaces in `render_warning`. For explicit
+rendering use `pptx_render_slide`.
 """
 
 mcp = FastMCP("pptx-editor", instructions=INSTRUCTIONS)
 
 
-# ── Structured response helpers (issue #88) ────────────────────────────
-
-def _success(result: Any) -> str:
-    """Wrap a successful tool result in ``{"ok": true, "result": ...}``.
-
-    ``result`` は legacy tool の戻り値 (通常は human-readable string) を
-    そのまま格納する。JSON で表現できない object は呼び出し側で事前に
-    serialize すること。
-    """
-    return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
-
-
-def _error(
-    code: str,
-    message: str,
-    *,
-    parameter: Optional[str] = None,
-    hint: Optional[str] = None,
-    issue: Optional[int] = None,
-) -> str:
-    """Build a structured error payload and return JSON-string.
-
-    Shape::
-
-        {"ok": false, "error": {"code": <str>, "message": <str>,
-         "parameter": <optional str>, "hint": <optional str>,
-         "issue": <optional int>}}
-    """
-    err: Dict[str, Any] = {"code": code, "message": message}
-    if parameter is not None:
-        err["parameter"] = parameter
-    if hint is not None:
-        err["hint"] = hint
-    if issue is not None:
-        err["issue"] = issue
-    return json.dumps({"ok": False, "error": err}, ensure_ascii=False)
-
-
-def _err(e: Exception) -> str:
-    """Translate an exception into a structured error JSON string.
-
-    ``EngineError`` は ``code`` enum をそのまま error.code として流用する。
-    それ以外は ``INTERNAL_ERROR`` に fall back する。
-    """
-    if isinstance(e, EngineError):
-        return _error(e.code.value, str(e))
-    return _error("INTERNAL_ERROR", f"{type(e).__name__}: {e}")
-
-
-# ── Auto-render gate (issue #86) ───────────────────────────────────────
-
-_DEFAULT_RENDER_TIMEOUT_S = 10.0
-
-
-def _auto_render_enabled() -> bool:
-    """``PPTX_MCP_AUTO_RENDER`` が truthy なら auto-render を実行する."""
-    v = os.environ.get("PPTX_MCP_AUTO_RENDER", "").strip().lower()
-    return v in {"1", "true", "yes", "on"}
-
-
-def _auto_render_timeout() -> float:
-    """``PPTX_MCP_RENDER_TIMEOUT`` (秒) を float で返す. 既定 10 秒."""
-    raw = os.environ.get("PPTX_MCP_RENDER_TIMEOUT", "").strip()
-    if not raw:
-        return _DEFAULT_RENDER_TIMEOUT_S
-    try:
-        v = float(raw)
-        if v <= 0:
-            return _DEFAULT_RENDER_TIMEOUT_S
-        return v
-    except ValueError:
-        return _DEFAULT_RENDER_TIMEOUT_S
-
-
 def _auto_render(file_path: str, slide_index: int) -> Dict[str, Any]:
-    """Render a slide preview if enabled; else return a neutral "skipped" payload.
+    """Thin adapter around :func:`_render._run_auto_render` that injects
+    this module's ``render_slide`` binding.
 
-    Always returns a dict — never raises, never fails the caller. Shape::
-
-        {"rendered": false, "reason": "disabled"}                       # off
-        {"rendered": true, "preview_path": "/.../slide-01.png"}         # ok
-        {"rendered": false, "reason": "timeout", "timeout_s": 10.0}     # slow
-        {"rendered": false, "reason": "failed", "error": "<msg>"}       # crash
-
-    Opt-in via ``PPTX_MCP_AUTO_RENDER=1``. Timeout via
-    ``PPTX_MCP_RENDER_TIMEOUT`` (default 10s). The caller should only invoke
-    this AFTER the primary action has succeeded.
+    Tests monkey-patch ``server.render_slide`` to avoid spawning LibreOffice
+    subprocesses. By resolving ``render_slide`` through this module's
+    namespace here (rather than inside ``_render.py``), those patches take
+    effect transparently.
     """
-    if not _auto_render_enabled():
-        return {"rendered": False, "reason": "disabled"}
-
-    timeout = _auto_render_timeout()
-
-    def _do_render() -> str:
-        return render_slide(file_path, slide_index=slide_index, dpi=100)
-
-    # ThreadPoolExecutor で走らせ future.result(timeout) で上限を掛ける。
-    # `with` block を使うと __exit__ で shutdown(wait=True) が呼ばれ、
-    # 裏の slow スレッドが終わるまでブロックするため timeout が機能しない。
-    # 代わりに明示的に shutdown(wait=False) を呼ぶ。
-    # timeout 到達時はスレッドが裏で生きたままだが、subprocess 側にも
-    # 120 秒 / 60 秒の独自 timeout があるため無限ハングはしない。
-    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        future = ex.submit(_do_render)
-        try:
-            out = future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            return {
-                "rendered": False,
-                "reason": "timeout",
-                "timeout_s": timeout,
-            }
-        except Exception as e:  # renderer itself raised
-            return {"rendered": False, "reason": "failed", "error": f"{type(e).__name__}: {e}"}
-    finally:
-        ex.shutdown(wait=False)
-
-    try:
-        # render_slide may return multiple lines; take the last one (target slide)
-        lines = out.strip().split("\n")
-        return {"rendered": True, "preview_path": lines[-1]}
-    except Exception as e:
-        return {"rendered": False, "reason": "failed", "error": f"{type(e).__name__}: {e}"}
-
-
-def _success_with_render(primary: Any, render_info: Dict[str, Any]) -> str:
-    """Compose a success payload plus the auto-render outcome.
-
-    - Render disabled → plain ``{"ok": true, "result": <primary>}``.
-    - Render succeeded → result wraps ``{"value": primary, "preview_path": ...}``.
-    - Render failed/timed out → result wraps ``{"value": primary,
-      "render_warning": {...}}``.
-    """
-    if not render_info.get("rendered") and render_info.get("reason") == "disabled":
-        return _success(primary)
-    if render_info.get("rendered"):
-        return _success(
-            {"value": primary, "preview_path": render_info.get("preview_path")}
-        )
-    # Failed / timeout — primary still succeeded.
-    return _success({"value": primary, "render_warning": render_info})
+    return _run_auto_render(
+        file_path,
+        slide_index,
+        render_fn=render_slide,
+    )
 
 
 # --- Presentation ------------------------------------------------

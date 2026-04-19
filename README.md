@@ -1,8 +1,9 @@
 # pptx-mcp-server
 
 MCP server for creating, reading, and editing PowerPoint (.pptx) presentations.
-Provides 25 tools for slide management, shape/text manipulation, table operations,
-composite layouts, and slide rendering -- all accessible via the Model Context Protocol.
+Provides 37 tools for slide management, shape/text manipulation, table operations,
+composite layouts, layout validation, and slide rendering -- all accessible via
+the Model Context Protocol.
 
 ## Installation
 
@@ -199,6 +200,7 @@ tool is unaffected by this gate.
 | Tool | Description |
 |------|-------------|
 | `pptx_add_slide` | Add a new slide with a specified layout |
+| `pptx_move_slide` | Move a slide from one position to another (0-based indices) |
 | `pptx_delete_slide` | Delete a slide by 0-based index |
 | `pptx_duplicate_slide` | Duplicate a slide (appended at end) |
 | `pptx_set_slide_background` | Set solid background color for a slide |
@@ -209,6 +211,8 @@ tool is unaffected by this gate.
 | Tool | Description |
 |------|-------------|
 | `pptx_add_textbox` | Add a text box with full formatting options |
+| `pptx_add_auto_fit_textbox` | Add a textbox that auto-shrinks font to fit within width/height |
+| `pptx_add_flex_container` | Add a flex-layout container that arranges children along an axis |
 | `pptx_edit_text` | Edit text content and formatting in an existing shape |
 | `pptx_add_paragraph` | Append a new paragraph to an existing shape |
 | `pptx_add_shape` | Add an auto shape (rectangle, oval, arrow, chevron, etc.) |
@@ -229,15 +233,24 @@ tool is unaffected by this gate.
 
 | Tool | Description |
 |------|-------------|
+| `pptx_build_deck` | Build an entire deck from a JSON spec (single file I/O) |
+| `pptx_build_slide` | Build a single slide from a JSON spec |
 | `pptx_add_content_slide` | Add a content slide with action title, divider, footnote, page number |
 | `pptx_add_section_divider` | Add a section divider slide with dark background and accent stripes |
 | `pptx_add_kpi_row` | Add a row of KPI callout boxes |
 | `pptx_add_bullet_block` | Add a bulleted text block with multiple items |
+| `pptx_add_responsive_card_row` | Add a row of auto-sized card shapes with title + body |
+| `pptx_add_connector` | Add a connector (straight / elbow / curve) with optional arrowheads |
+| `pptx_add_callout` | Add an annotation textbox + arrow pointing to a target |
+| `pptx_add_chart` | Add a native chart (bar, column, line, pie, area, radar, doughnut) |
+| `pptx_add_icon` | Add a built-in vector icon to a slide |
+| `pptx_list_icons` | List all built-in icons available to `pptx_add_icon` |
 
-### Rendering
+### Validation & Rendering
 
 | Tool | Description |
 |------|-------------|
+| `pptx_check_layout` | Validate deck layouts: overlaps, out-of-bounds, overflow, readability |
 | `pptx_render_slide` | Render slide(s) to PNG via LibreOffice for visual verification |
 
 ## Dependencies
