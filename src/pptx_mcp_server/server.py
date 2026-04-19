@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
 pptx-mcp-server -- MCP server for PPTX presentation editing.
+
+Parameter conventions (new tools):
+- ``*_json``: JSON-stringified array/object input (例: ``rows_json``, ``kpis_json``,
+  ``cards_json``, ``items_json``). 生の Python list/dict ではなく必ず JSON 文字列で渡す。
+- ``*_pt``: フォントサイズなど「ポイント単位」を明示する (例: ``font_size_pt``,
+  ``min_size_pt``)。旧 tool の素の ``font_size`` は後方互換のため温存する。
+- ``colors``: ``"#"`` を含まない 6 桁 hex (例: ``"2251FF"``)。
+- coordinates: inches (float)。
 """
 
 import json
+from typing import Any, Dict
 
 from mcp.server.fastmcp import FastMCP
 
@@ -399,7 +408,7 @@ def pptx_add_auto_fit_textbox(
 def pptx_add_flex_container(
     file_path: str,
     slide_index: int,
-    items: list,
+    items_json: str,
     left: float,
     top: float,
     width: float,
@@ -411,7 +420,8 @@ def pptx_add_flex_container(
 ) -> str:
     """Add a CSS-flexbox-style container that lays out child items along a main axis.
 
-    `items` is a list of dicts with:
+    ``items_json`` は JSON-stringified array (``*_json`` 命名規約に沿う)。各要素 dict
+    のキーは以下:
       - `sizing`: "fixed" | "grow" | "content"
       - `type`: "text" | "rectangle"
       - `size` (for fixed), `grow` (for grow, default 1), `content_size` (for content)
@@ -422,15 +432,28 @@ def pptx_add_flex_container(
     direction: "row" (horizontal) | "column" (vertical). gap and padding in inches.
     align cross-axis: "stretch" | "start" | "center" | "end" (MVP treats all as stretch for size).
 
+    例: ``items_json='[{"sizing":"fixed","size":2,"type":"rectangle"}]'``
+
     Returns JSON with allocations (per-item [left, top, width, height]) and shape identifiers created.
     """
     try:
+        if not isinstance(items_json, str):
+            return (
+                "[INVALID_PARAMETER] items_json must be a JSON string "
+                "(例: '[{\"sizing\":\"fixed\",\"size\":2,\"type\":\"rectangle\"}]'). "
+                "生の Python list は受け付けない (#35 breaking change)。"
+            )
+        items = json.loads(items_json)
+        if not isinstance(items, list):
+            return "[INVALID_PARAMETER] items_json must decode to a JSON array."
         result = add_flex_container_file(
             file_path, slide_index, items,
             left=left, top=top, width=width, height=height,
             direction=direction, gap=gap, padding=padding, align=align,
         )
         return json.dumps(result)
+    except json.JSONDecodeError as e:
+        return f"[INVALID_PARAMETER] Invalid JSON in items_json: {e}"
     except Exception as e:
         return _err(e)
 
@@ -779,9 +802,9 @@ def pptx_add_responsive_card_row(
             height_mode=height_mode,  # type: ignore[arg-type]
             min_card_height=min_card_height,
         )
-        save_pptx(prs, file_path)
 
-        # CardPlacement を JSON 化可能な dict に変換する
+        # CardPlacement を JSON 化可能な dict に変換する (save 前に行う)。
+        # ここで serialize に失敗しても disk 上のファイルは変更されない (#34)。
         result = {
             "cards": [
                 {
@@ -795,6 +818,11 @@ def pptx_add_responsive_card_row(
             "consumed_height": consumed,
         }
         out = json.dumps(result)
+
+        # すべての in-memory 処理と return 値構築が成功した最後に保存する。
+        # これにより中途半端な save による破損状態を防ぐ (#34)。
+        save_pptx(prs, file_path)
+
         out += _auto_render(file_path, slide_index)
         return out
     except Exception as e:
@@ -1024,16 +1052,71 @@ def pptx_render_slide(
 
 # --- Entry Point --------------------------------------------------
 
+def _format_check_layout_summary(result: Dict[str, Any]) -> str:
+    """``check_deck_extended`` の dict を legacy 形式の人間可読 string に整形する.
+
+    Clean の場合:
+        ``"All slides clean — no overlaps, out-of-bounds, text overflow, or
+        readability issues detected."``
+
+    問題がある場合:
+        ``"Found N layout issues:\\n- Slide <i> [severity] <category>: <msg>"``
+    """
+    lines: list[str] = []
+    for slide in result.get("slides", []):
+        idx = slide.get("index", 0)
+        # overlaps / out_of_bounds は legacy 文字列リスト (severity = error 固定)。
+        for msg in slide.get("overlaps", []) or []:
+            lines.append(f"- Slide {idx} [error] overlap: {msg}")
+        for msg in slide.get("out_of_bounds", []) or []:
+            lines.append(f"- Slide {idx} [error] out_of_bounds: {msg}")
+        # ValidationFinding 由来カテゴリ (dict)
+        for key in (
+            "text_overflow",
+            "unreadable_text",
+            "divider_collision",
+            "inconsistent_gaps",
+        ):
+            for f in slide.get(key, []) or []:
+                sev = f.get("severity", "info") if isinstance(f, dict) else "info"
+                msg = f.get("message", "") if isinstance(f, dict) else str(f)
+                lines.append(f"- Slide {idx} [{sev}] {key}: {msg}")
+
+    if not lines:
+        return (
+            "All slides clean — no overlaps, out-of-bounds, text overflow, "
+            "or readability issues detected."
+        )
+    return f"Found {len(lines)} layout issues:\n" + "\n".join(lines)
+
+
 @mcp.tool()
 def pptx_check_layout(
     file_path: str,
+    detailed: bool = False,
     min_readable_pt: float = 8.0,
     overflow_tolerance_pct: float = 5.0,
 ) -> str:
     """Validate slide layouts: overlaps, out-of-bounds, text overflow,
     unreadable font, title/divider collision, inconsistent gaps.
 
-    Returns a JSON string with per-slide findings and a summary block.
+    既定では human-readable な legacy string を返す (後方互換)。
+
+    - Clean: ``"All slides clean — no overlaps, out-of-bounds, text overflow, or readability issues detected."``
+    - 問題あり: ``"Found N layout issues:\\n- Slide <i> [severity] <category>: <msg>"``
+
+    ``detailed=True`` を渡すと JSON 文字列を返す。スキーマは以下のとおり::
+
+        {
+            "slides": [
+                {"index": int, "overlaps": [...], "out_of_bounds": [...],
+                 "text_overflow": [...], "unreadable_text": [...],
+                 "divider_collision": [...], "inconsistent_gaps": [...]},
+                ...
+            ],
+            "summary": {"errors": int, "warnings": int, "infos": int}
+        }
+
     Run after building a deck to catch layout issues before delivery."""
     try:
         from pptx import Presentation
@@ -1043,7 +1126,9 @@ def pptx_check_layout(
             min_readable_pt=min_readable_pt,
             overflow_tolerance_pct=overflow_tolerance_pct,
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if detailed:
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        return _format_check_layout_summary(result)
     except Exception as e:
         return _err(e)
 
