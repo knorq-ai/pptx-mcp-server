@@ -181,7 +181,35 @@ def add_flex_container(
     content_total = sum(
         max(it.content_size, 0.0) for it in items if it.sizing == "content"
     )
-    remain = max(0.0, usable_main - fixed_total - content_total)
+
+    # 非 grow 項目の合計が usable_main を超える over-budget を検出する。
+    # 従来は ``remain`` を 0 でフロアしていたため、3 つの ``fixed(5)`` を
+    # 10" コンテナに入れても例外が発生せず、3 つ目がコンテナ外 (スライド
+    # 外になり得る位置) にサイレントに配置されていた (#25)。
+    # サイジング指定の誤りは呼び出し元のロジックバグであるため、0 フロア
+    # を外し、明示的に ``INVALID_PARAMETER`` で失敗させる。
+    declared_total = fixed_total + content_total
+    # 浮動小数の丸め誤差を許容する微小な閾値
+    _OVER_BUDGET_EPS = 1e-9
+    if declared_total > usable_main + _OVER_BUDGET_EPS:
+        gap_total = gap * max(n - 1, 0)
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            (
+                "Flex container over-budget: "
+                f"fixed_total={fixed_total:.2f} + "
+                f"content_total={content_total:.2f} = "
+                f"{declared_total:.2f} exceeds "
+                f"usable_main={usable_main:.2f} "
+                f"(= {'width' if direction == 'row' else 'height'}="
+                f"{(width if direction == 'row' else height):.2f} "
+                f"- 2*padding={2 * padding:.2f} "
+                f"- gap*(n-1)={gap_total:.2f}). "
+                "Reduce sizes or increase container width."
+            ),
+        )
+
+    remain = max(0.0, usable_main - declared_total)
 
     grow_indices = [i for i, it in enumerate(items) if it.sizing == "grow"]
     grow_sizes = _distribute_grow(items, grow_indices, remain)

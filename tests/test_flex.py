@@ -11,6 +11,7 @@ import math
 import pytest
 
 from pptx_mcp_server.engine.flex import FlexItem, add_flex_container
+from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
 
 
 EPS = 1e-6
@@ -268,6 +269,129 @@ def test_zero_grow_gets_no_share():
     )
     assert _approx(allocs[0][2], 0.0)
     assert _approx(allocs[1][2], 10.0)
+
+
+def test_over_budget_three_fixed_raises():
+    """3 × fixed(5) in 10" コンテナ (padding=0, gap=0) は INVALID_PARAMETER で失敗する (#25)."""
+    renders = [_recorder() for _ in range(3)]
+    items = [
+        FlexItem(sizing="fixed", size=5.0, render=renders[0][0]),
+        FlexItem(sizing="fixed", size=5.0, render=renders[1][0]),
+        FlexItem(sizing="fixed", size=5.0, render=renders[2][0]),
+    ]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row", gap=0.0, padding=0.0,
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    # エラーメッセージには過剰な合計値と usable_main が含まれる (デバッグ用)
+    msg = str(excinfo.value)
+    assert "15.00" in msg
+    assert "10.00" in msg
+    # render は一度も呼ばれていない
+    for _, calls in renders:
+        assert calls == []
+
+
+def test_fixed_plus_grow_with_gap_just_fits():
+    """fixed(4) + fixed(4) + grow(1) in 10" (gap=0.5): fixed 8 + gap 1 = 9 ≤ 10, grow は 1."""
+    renders = [_recorder() for _ in range(3)]
+    items = [
+        FlexItem(sizing="fixed", size=4.0, render=renders[0][0]),
+        FlexItem(sizing="fixed", size=4.0, render=renders[1][0]),
+        FlexItem(sizing="grow", grow=1.0, render=renders[2][0]),
+    ]
+    allocs = add_flex_container(
+        slide=None,
+        items=items,
+        left=0.0, top=0.0, width=10.0, height=1.0,
+        direction="row", gap=0.5, padding=0.0,
+    )
+    assert _approx(allocs[0][2], 4.0)
+    assert _approx(allocs[1][2], 4.0)
+    assert _approx(allocs[2][2], 1.0)
+
+
+def test_fixed_plus_content_exactly_fits():
+    """fixed(4) + content(5) in 10" (gap=0): 9 ≤ 10、余り 1 は grow がないので未使用."""
+    renders = [_recorder() for _ in range(2)]
+    items = [
+        FlexItem(sizing="fixed", size=4.0, render=renders[0][0]),
+        FlexItem(sizing="content", content_size=5.0, render=renders[1][0]),
+    ]
+    allocs = add_flex_container(
+        slide=None,
+        items=items,
+        left=0.0, top=0.0, width=10.0, height=1.0,
+        direction="row", gap=0.0, padding=0.0,
+    )
+    assert _approx(allocs[0][2], 4.0)
+    assert _approx(allocs[1][2], 5.0)
+
+
+def test_fixed_content_fixed_over_budget_raises():
+    """fixed(4) + content(5) + fixed(2) in 10" (gap=0): 11 > 10 で raises."""
+    renders = [_recorder() for _ in range(3)]
+    items = [
+        FlexItem(sizing="fixed", size=4.0, render=renders[0][0]),
+        FlexItem(sizing="content", content_size=5.0, render=renders[1][0]),
+        FlexItem(sizing="fixed", size=2.0, render=renders[2][0]),
+    ]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row", gap=0.0, padding=0.0,
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    msg = str(excinfo.value)
+    assert "11.00" in msg
+    assert "10.00" in msg
+
+
+def test_padding_tight_fit_ok_then_over_budget():
+    """padding=0.5 エッジケース: usable = 10 - 1 = 9.
+
+    - fixed(4)+fixed(4) なら fixed_total=8 ≤ 9 で OK
+    - fixed(4)+fixed(4)+fixed(1.5) なら 9.5 > 9 で raises
+    """
+    # 境界内ケース
+    renders_ok = [_recorder() for _ in range(2)]
+    items_ok = [
+        FlexItem(sizing="fixed", size=4.0, render=renders_ok[0][0]),
+        FlexItem(sizing="fixed", size=4.0, render=renders_ok[1][0]),
+    ]
+    allocs = add_flex_container(
+        slide=None,
+        items=items_ok,
+        left=0.0, top=0.0, width=10.0, height=1.0,
+        direction="row", gap=0.0, padding=0.5,
+    )
+    assert _approx(allocs[0][2], 4.0)
+    assert _approx(allocs[1][2], 4.0)
+
+    # 境界外ケース
+    renders_bad = [_recorder() for _ in range(3)]
+    items_bad = [
+        FlexItem(sizing="fixed", size=4.0, render=renders_bad[0][0]),
+        FlexItem(sizing="fixed", size=4.0, render=renders_bad[1][0]),
+        FlexItem(sizing="fixed", size=1.5, render=renders_bad[2][0]),
+    ]
+    with pytest.raises(EngineError) as excinfo:
+        add_flex_container(
+            slide=None,
+            items=items_bad,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row", gap=0.0, padding=0.5,
+        )
+    assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+    msg = str(excinfo.value)
+    assert "9.50" in msg
+    assert "9.00" in msg
 
 
 def test_render_receives_correct_args():
