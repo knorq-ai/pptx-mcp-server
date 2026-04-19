@@ -21,6 +21,7 @@ from pptx_mcp_server.engine.validation import (
     check_deck_extended,
     check_divider_collision,
     check_inconsistent_gaps,
+    check_slide_overlaps,
     check_text_overflow,
     check_unreadable_text,
 )
@@ -808,3 +809,65 @@ class TestDividerCollisionAnchor:
         top, bot = _projected_text_range(tb, tf, needed_height=0.6)
         assert top == pytest.approx(0.40, abs=1e-3)
         assert bot == pytest.approx(1.00, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 1 sq in min-area filter (#77)
+# ---------------------------------------------------------------------------
+
+
+class TestOverlapMinAreaFilter:
+    """check_slide_overlaps の min-area filter が通常 text label を取り逃がさないこと."""
+
+    def test_small_text_label_overlapping_card_is_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        """2.3"×0.35" (0.805 sq in) の text label × 大きな card overlap を報告する.
+
+        旧閾値 1.0 sq in では silently drop されていた (#77)。
+        本番 report_pptx のシーン別スコア行が card に被る現象の再現。
+        """
+        slide = one_slide_prs.slides[0]
+        # Card: 大きな rectangle (4.11 sq in)
+        _add_rect(slide, left_in=8.69, top_in=5.40, width_in=3.74, height_in=1.10)
+        # Text label: 0.805 sq in, card と x=8.69-10.30, y=5.40-5.68 で overlap
+        _add_textbox(
+            slide, left_in=8.00, top_in=5.33, width_in=2.30, height_in=0.35,
+            text="クリエイター向け高性能ノートPC", font_pt=10,
+        )
+        warnings = check_slide_overlaps(slide, margin=0.03)
+        msgs = [w for w in warnings if "OVERLAP" in w]
+        assert len(msgs) >= 1, (
+            f"Expected text/card overlap to be reported; got: {warnings}"
+        )
+
+    def test_decorative_icon_overlap_still_ignored(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        """_is_small_decorative が覆うクラス (icon / divider) は依然 skip."""
+        slide = one_slide_prs.slides[0]
+        _add_rect(slide, left_in=2.0, top_in=2.0, width_in=3.0, height_in=2.0)
+        # Decorative icon: h < 0.08 → `_is_small_decorative` が true
+        _add_rect(slide, left_in=2.1, top_in=2.1, width_in=1.0, height_in=0.05)
+        warnings = check_slide_overlaps(slide, margin=0.03)
+        msgs = [w for w in warnings if "OVERLAP" in w]
+        assert not msgs, f"Expected decorative shape to be skipped; got: {warnings}"
+
+    def test_0_5_inch_label_overlap_is_flagged(
+        self, one_slide_prs: Presentation
+    ) -> None:
+        """0.5"×0.3" (0.15 sq in) の KPI value × card overlap も報告する.
+
+        0.15 は新 threshold の境界値。これ未満は skip (decorative 扱い)。
+        """
+        slide = one_slide_prs.slides[0]
+        _add_rect(slide, left_in=2.0, top_in=2.0, width_in=3.0, height_in=2.0)
+        _add_textbox(
+            slide, left_in=2.3, top_in=2.3, width_in=0.5, height_in=0.3,
+            text="42", font_pt=16,
+        )
+        warnings = check_slide_overlaps(slide, margin=0.03)
+        # _is_container が true になるので report されないことを期待。
+        # これは regression: container 内は intentional overlap。
+        msgs = [w for w in warnings if "OVERLAP" in w]
+        assert not msgs, f"Container overlap should be skipped; got: {warnings}"
