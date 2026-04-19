@@ -2,14 +2,16 @@
 
 自動レイアウト用のテキスト幅・高さ推定を提供する。
 実フォントメトリクスファイルに依存せず、Arial/Helvetica を想定した平均字幅
-モデルで近似する。CJK は 1em 全角、ASCII は 3-tier (narrow/normal/wide) の
-バケットモデルで近似する。
+モデルで近似する。CJK は 1em 全角、ASCII は 4-tier
+(very_narrow / narrow / normal / wide) のバケットモデルで近似する。
 
 # 精度 (Accuracy)
 
 本モジュールはヒューリスティックであり、実測値との誤差帯は以下のとおりである。
 
-- Arial Latin: mixed-case 文字列で ±10% (旧単一定数モデルは +21% 過大評価)
+- Arial Latin per-char: 全 ASCII printable (0x20–0x7E) で最悪 ±17.4%
+  (Liberation Sans 実測ベース、4-bucket 分割で最適化)
+- Arial Latin mixed string: 代表的な文字列で ±10%
 - CJK (Yu Gothic / Meiryo など日本語システムフォント): ±15%
 - Italic / Condensed / 非 Arial 系: それ以上に悪化し得る
 
@@ -20,8 +22,8 @@
 # 既知の制限
 - カーニングやヒンティングは考慮しない。
 - フォントファミリ差は現時点で無視する (引数は将来拡張のため保持)。
-- ASCII は 3-tier (narrow/normal/wide) バケットで近似する。同一バケット内の
-  advance 幅差分 (例: narrow バケット内の ``'`` と ``*``) は丸める。
+- ASCII は 4-tier (very_narrow / narrow / normal / wide) バケットで近似する。
+  同一バケット内の advance 幅差分は丸める。
 - イタリック・装飾体の幅差分は無視する。Bold のみ 1.05 倍の補正を行う。
 - 合字・絵文字の幅は保証しない。結合マーク・ゼロ幅文字は 0 幅で扱う。
 """
@@ -31,37 +33,47 @@ from __future__ import annotations
 import unicodedata
 
 # 2026-04: Liberation Sans (Arial metric-compatible) を fontTools で実測した
-# advance width に基づく 3-tier 近似 (#69)。
-# 単一定数 (旧 0.0083) は mixed-case 文字列で +21% 過大評価になっていた。
-# narrow 文字 (`i`, `l`, space 等) と wide 文字 (`M`, `W` 等) は実測で
-# ~2倍以上の差があり、単一定数では吸収しきれない系統的バイアスを生じる。
+# advance width に基づく 4-tier 近似 (#71)。
+# #70 の 3-tier では `r`/`t`/`f` など advance ~0.00463 の文字が NARROW バケット
+# (0.00335) へ割り当てられ −27% の誤差を生じていた (Codex gpt-5.4 検出)。
+# 全 ASCII printable に対し「worst-case per-char 相対誤差を最小化」する境界・
+# 代表値を探索した結果、3-bucket では最悪 27% だったものが 4-bucket で
+# 17.4% まで低下する。較正ロジックは ``scripts/calibrate_ascii.py`` を参照。
 #
-# 較正スクリプト: ``scripts/calibrate_ascii.py`` (一回限り、配布物には含めない)
-# 出力を 5 桁で丸め、narrow バケットは実用上の test sentinel (`i`, `l`) との
-# 乖離が ±20% 以内に収まるよう平均からやや下側に寄せた値を採用する。
-# wide バケットは M/W/m など test sentinel との乖離を抑えるため平均よりも
-# 上側に寄せた値を採用する (narrow・wide バケットは実測 2 倍差でそもそも
-# 完全フィットしないため、テストされる代表文字を優先する設計判断)。
+# 代表値は各バケットの [min, max] 閉区間における worst-case 相対誤差を最小化
+# する調和平均 repr = 2*min*max/(min+max) を採用する (単純平均ではない)。
+# このため、定数そのものを「手で最適 sentinel に寄せる」バイアス調整は不要。
 
-# ASCII narrow 文字幅 (i, l, j, 空白, 句読点等)
-_ASCII_NARROW_WIDTH_PER_PT: float = 0.00335
+# ASCII very_narrow 文字幅 (i, l, j, ', |)
+# 範囲: 0.00265 ≤ w ≤ 0.00361, repr=0.00306, worst 15.3%
+_ASCII_VERY_NARROW_WIDTH_PER_PT: float = 0.00306
+
+# ASCII narrow 文字幅 (space, punctuation, I, f, r, t 等)
+# 範囲: 0.00386 ≤ w ≤ 0.00541, repr=0.00450, worst 16.7%
+_ASCII_NARROW_WIDTH_PER_PT: float = 0.00450
 
 # ASCII normal 文字幅 (小文字多数 + 数字 + 中幅大文字)
+# 範囲: 0.00652 ≤ w ≤ 0.00926, repr=0.00765, worst 17.4%
 _ASCII_NORMAL_WIDTH_PER_PT: float = 0.00765
 
-# ASCII wide 文字幅 (大文字多数 + M/W/m/% 等)
-_ASCII_WIDE_WIDTH_PER_PT: float = 0.01150
+# ASCII wide 文字幅 (大文字多数 + M/W/m/@ 等)
+# 範囲: 0.01003 ≤ w ≤ 0.01410, repr=0.01172, worst 16.9%
+_ASCII_WIDE_WIDTH_PER_PT: float = 0.01172
 
 # Legacy alias: 旧 `_ASCII_WIDTH_PER_PT` を import している外部コード向け。
 # 新コードでは `_ASCII_NORMAL_WIDTH_PER_PT` を参照すること。
 _ASCII_WIDTH_PER_PT: float = _ASCII_NORMAL_WIDTH_PER_PT
 
-# Narrow バケット: advance width < 0.0055"/pt の ASCII printable 文字
-# (Liberation Sans 実測値に基づく分類)
-_ASCII_NARROW_CHARS: frozenset[str] = frozenset(" !\"'()*,-./:;I[\\]`fijlrt{|}")
+# Very narrow バケット: advance width ≤ ~0.00361"/pt の ASCII printable 文字
+_ASCII_VERY_NARROW_CHARS: frozenset[str] = frozenset("'ijl|")
 
-# Wide バケット: advance width >= 0.009"/pt の ASCII printable 文字
-_ASCII_WIDE_CHARS: frozenset[str] = frozenset("%&@ABCDEGHKMNOPQRSUVWXYmw")
+# Narrow バケット: 0.00386 ≤ advance < ~0.00596"/pt の ASCII printable 文字
+# `r`/`t`/`f` は #70 までの 3-tier で NARROW (<0.0055) に誤分類されていたが、
+# 実測では 0.00386–0.00463 の範囲でこの NARROW バケットに収まる。
+_ASCII_NARROW_CHARS: frozenset[str] = frozenset(" !\"()*,-./:;I[\\]`frt{}")
+
+# Wide バケット: advance ≥ ~0.00965"/pt の ASCII printable 文字
+_ASCII_WIDE_CHARS: frozenset[str] = frozenset("%@CDGHMNOQRUWmw")
 
 # 残りの ASCII printable (0x20–0x7E) は _ASCII_NORMAL_WIDTH_PER_PT を使う。
 
@@ -178,19 +190,21 @@ def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float
     2. 半角カタカナ (``is_half_width_kana``) は ASCII normal 幅
        (``size_pt * _ASCII_NORMAL_WIDTH_PER_PT``) を適用する。
     3. CJK 全角 (``is_cjk``) は ``size_pt * _CJK_WIDTH_PER_PT`` (1em)。
-    4. ASCII narrow 文字 (``i``, ``l``, 空白, 句読点等) は
+    4. ASCII very_narrow 文字 (``i``, ``l``, ``j``, ``'``, ``|``) は
+       ``size_pt * _ASCII_VERY_NARROW_WIDTH_PER_PT``。
+    5. ASCII narrow 文字 (space, 句読点, ``I``, ``f``, ``r``, ``t`` 等) は
        ``size_pt * _ASCII_NARROW_WIDTH_PER_PT``。
-    5. ASCII wide 文字 (``M``, ``W``, 大文字多数等) は
+    6. ASCII wide 文字 (``M``, ``W``, ``m``, ``@`` 等) は
        ``size_pt * _ASCII_WIDE_WIDTH_PER_PT``。
-    6. それ以外は ``size_pt * _ASCII_NORMAL_WIDTH_PER_PT``。
+    7. それ以外は ``size_pt * _ASCII_NORMAL_WIDTH_PER_PT``。
 
     ``font`` は将来拡張のため引数に残すが、現状は Arial/Helvetica を前提
     として無視される (助言ラベル)。
 
     Returns:
-        Estimated width in inches. Accuracy: ±10% for Arial Latin mixed-case
-        strings, ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
-        worse for italic/condensed/non-Arial.
+        Estimated width in inches. Accuracy: ±17% per-char / ±10% for
+        mixed-case strings on Arial Latin, ±15% for CJK with Japanese system
+        fonts (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial.
     """
     if not char:
         return 0.0
@@ -201,6 +215,8 @@ def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float
     if is_cjk(char):
         return size_pt * _CJK_WIDTH_PER_PT
     # ASCII / Latin-1 / その他 narrow スクリプト
+    if char in _ASCII_VERY_NARROW_CHARS:
+        return size_pt * _ASCII_VERY_NARROW_WIDTH_PER_PT
     if char in _ASCII_NARROW_CHARS:
         return size_pt * _ASCII_NARROW_WIDTH_PER_PT
     if char in _ASCII_WIDE_CHARS:
@@ -222,10 +238,10 @@ def estimate_text_width(
 
     Returns:
         Estimated width in inches. Accuracy: ±10% for Arial Latin mixed-case
-        strings, ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
-        worse for italic/condensed/non-Arial. The ``font`` argument is
-        currently an advisory label — width constants are calibrated for
-        Arial only.
+        strings (per-char ±17%), ±15% for CJK with Japanese system fonts
+        (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. The
+        ``font`` argument is currently an advisory label — width constants
+        are calibrated for Arial only.
     """
     if not text:
         return 0.0
@@ -260,10 +276,10 @@ def wrap_text(
     Returns:
         List of wrapped lines. Line breaks are determined by the same
         width heuristic as :func:`estimate_text_width`; accuracy ±10% for
-        Arial Latin mixed-case strings, ±15% for CJK with Japanese system
-        fonts (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. Border
-        cases may produce one extra or one fewer line than PowerPoint's
-        own layout.
+        Arial Latin mixed-case strings (per-char ±17%), ±15% for CJK with
+        Japanese system fonts (Yu Gothic/Meiryo), worse for italic/condensed/
+        non-Arial. Border cases may produce one extra or one fewer line than
+        PowerPoint's own layout.
     """
     if not text:
         return []
@@ -406,12 +422,11 @@ def estimate_text_height(
 
     Returns:
         Estimated total height in inches. Accuracy inherits from
-        :func:`wrap_text` — ±10% for Arial Latin mixed-case strings,
-        ±15% for CJK with
-        Japanese system fonts (Yu Gothic/Meiryo), worse for
-        italic/condensed/non-Arial. The ``line_height_factor`` default of
-        1.2 matches PowerPoint's "single spacing"; adjust explicitly for
-        tighter/looser leading.
+        :func:`wrap_text` — ±10% for Arial Latin mixed-case strings
+        (per-char ±17%), ±15% for CJK with Japanese system fonts
+        (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. The
+        ``line_height_factor`` default of 1.2 matches PowerPoint's "single
+        spacing"; adjust explicitly for tighter/looser leading.
     """
     if not text:
         return 0.0

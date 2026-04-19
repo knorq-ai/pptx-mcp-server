@@ -97,32 +97,63 @@ def cjk_font() -> str:
 
 # --- ASCII キャリブレーション ---
 
-# 3-tier バケットモデル (#69) 導入後は per-char テスト対象に narrow / wide の
-# sentinel (``i``, ``l``, ``M``, ``W``) も含める。単一定数モデル時代に必要だった
-# 「4× 境界のみ」の workaround は不要になった。
+# 4-tier バケットモデル (#71) 導入後は per-char テスト対象に各バケットの
+# 代表 sentinel を網羅する。#70 の 3-tier では `r`/`t`/`f` が NARROW に誤分類
+# されて −27% を超える誤差を出していたが、4-tier では全 ASCII printable で
+# 最悪 ±17.4% に収まる。よってパラメトリ対象を大幅に増やす。
 @pytest.mark.parametrize(
     ("char", "size_pt"),
     [
+        # very_narrow
+        ("i", 12),
+        ("l", 12),
+        ("j", 12),
+        ("'", 12),
+        ("|", 12),
+        # narrow (含 #71 の欠落 sentinel r/t/f)
+        (" ", 12),
+        (".", 12),
+        (",", 12),
+        (":", 12),
+        ("-", 12),
+        ("!", 12),
+        ("I", 12),
+        ("f", 12),
+        ("r", 12),
+        ("t", 12),
+        # normal — 小文字多数 / 数字 / 中幅大文字
         ("a", 10),
         ("a", 12),
         ("a", 14),
-        ("H", 10),
-        ("H", 18),
-        ("0", 10),
-        ("9", 12),
         ("e", 12),
         ("o", 12),
-        ("i", 12),
-        ("l", 12),
+        ("n", 12),
+        ("u", 12),
+        ("s", 12),
+        ("p", 12),
+        ("0", 10),
+        ("5", 12),
+        ("9", 12),
+        ("N", 12),
+        ("T", 12),
+        ("E", 12),
+        ("R", 12),
+        ("S", 12),
+        # wide
+        ("H", 10),
+        ("H", 18),
         ("M", 12),
         ("W", 12),
+        ("m", 12),
+        ("@", 12),
     ],
 )
 def test_ascii_per_char_calibration(arial_font: str, char: str, size_pt: float) -> None:
     """ASCII 文字について ±20% 以内で推定できることを確認する.
 
-    #69 の 3-tier バケットモデル導入により narrow (``i``/``l``) と
-    wide (``M``/``W``) も同一の許容帯で扱えるようになった。
+    #71 で 4-tier バケットモデルに移行し、worst-case ±17.4% (Liberation Sans
+    実測) を達成した。境界 sentinel (r, t, f) も NARROW バケットに正しく
+    分類される。
     """
     measured = advance_width_inches(arial_font, char, size_pt)
     estimated = estimate_char_width(char, size_pt)

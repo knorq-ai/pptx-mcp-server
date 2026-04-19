@@ -141,17 +141,22 @@ class TestEstimateTextWidth:
         assert width == pytest.approx(1.050, abs=0.01)
 
     def test_ascii_hello_world(self) -> None:
-        # "Hello World" = H(wide) e(norm) l(narr) l(narr) o(norm) ' '(narr)
-        #                 W(wide) o(norm) r(narr) l(narr) d(norm)
-        # = 2 wide + 4 normal + 5 narrow @ 12pt
+        # "Hello World" (#71 4-tier):
+        #   H(wide=0.01172) e(norm=0.00765) l(vn=0.00306) l(vn=0.00306)
+        #   o(norm=0.00765) ' '(narr=0.00450) W(wide=0.01172) o(norm=0.00765)
+        #   r(narr=0.00450) l(vn=0.00306) d(norm=0.00765)
+        # = 2 wide + 4 normal + 3 very_narrow + 2 narrow @ 12pt
         width = estimate_text_width("Hello World", 12)
-        expected = 12 * (2 * 0.01150 + 4 * 0.00765 + 5 * 0.00335)
+        expected = 12 * (
+            2 * 0.01172 + 4 * 0.00765 + 3 * 0.00306 + 2 * 0.00450
+        )
         assert width == pytest.approx(expected, abs=0.01)
 
     def test_mixed_ai_seikatsusha(self) -> None:
-        # "AI生活者" = A(wide) + I(narrow) + 3 CJK @ 10pt
+        # "AI生活者" = A(normal=0.00765) + I(narrow=0.00450) + 3 CJK @ 10pt
+        # (#71: A は WIDE ではなく NORMAL に再分類され、I は NARROW バケット)
         width = estimate_text_width("AI生活者", 10)
-        expected = 10 * 0.01150 + 10 * 0.00335 + 3 * 10 * 0.0139
+        expected = 10 * 0.00765 + 10 * 0.00450 + 3 * 10 * 0.0139
         assert width == pytest.approx(expected, abs=0.001)
 
     def test_empty_string_has_zero_width(self) -> None:
@@ -242,6 +247,8 @@ class TestEstimateTextWidthExtended:
         width = estimate_text_width("ｶﾀｶﾅ", 10)
         expected = 4 * 10 * 0.00765
         assert width == pytest.approx(expected, abs=0.001)
+
+
 
     def test_zwsp_does_not_add_width(self) -> None:
         # ZWSP を含む文字列は含まないものと同じ幅
