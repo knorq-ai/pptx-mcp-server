@@ -621,3 +621,227 @@ class TestDeclarativeItemStrictKeys:
             )
         assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
         assert "ellipse" in str(excinfo.value)
+
+
+# --- #72: 項目単体の宣言値検証 ---------------------------------------------
+
+
+class TestItemConstraintValidation:
+    """#72: ``add_flex_container`` エントリで各 ``FlexItem`` の矛盾 / 負値を拒否.
+
+    ``_distribute_grow`` は min-clamp を先に適用する構造上、``min_size >
+    max_size`` を受け入れるとサイレントに ``max_size`` 逸脱を生じる。同類の
+    失敗モードである #59・#65 と同様、エントリポイントで先回り拒否する.
+    """
+
+    def test_min_greater_than_max_raises(self):
+        """``min_size=5, max_size=3`` は不可能な制約として拒否する."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="grow", render=render, min_size=5.0, max_size=3.0)]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "min_size" in msg
+        assert "max_size" in msg
+
+    def test_negative_fixed_size_raises(self):
+        """``sizing='fixed'`` で ``size < 0`` は拒否する."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="fixed", render=render, size=-1.0)]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "size" in msg
+        assert "-1" in msg
+
+    def test_negative_grow_raises(self):
+        """``sizing='grow'`` で ``grow < 0`` は拒否する."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="grow", render=render, grow=-1.0)]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "grow" in msg
+
+    def test_negative_content_size_raises(self):
+        """``sizing='content'`` で ``content_size < 0`` は拒否する."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="content", render=render, content_size=-2.0)]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "content_size" in msg
+
+    def test_negative_min_size_raises(self):
+        """``min_size < 0`` は拒否する."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="grow", render=render, min_size=-0.1)]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "min_size" in msg
+
+    def test_negative_max_size_raises(self):
+        """``max_size < 0`` は拒否する."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="grow", render=render, max_size=-0.5)]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "max_size" in msg
+
+    def test_error_index_reflects_offending_item(self):
+        """2 つ目の項目が不正なら ``items[1]`` がメッセージに現れる."""
+        r1, _ = _recorder()
+        r2, _ = _recorder()
+        items = [
+            FlexItem(sizing="grow", render=r1, grow=1.0),
+            FlexItem(sizing="grow", render=r2, min_size=5.0, max_size=3.0),
+        ]
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=items,
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[1]" in msg
+        assert "items[0]" not in msg
+
+    def test_default_min_zero_max_inf_ok_regression(self):
+        """既定値 ``min_size=0, max_size=inf`` は妨げず配置できる (回帰)."""
+        render, calls = _recorder()
+        items = [FlexItem(sizing="grow", render=render)]
+        allocs = add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row",
+        )
+        assert len(allocs) == 1
+        assert _approx(allocs[0][2], 10.0)
+        assert len(calls) == 1
+
+    def test_min_less_than_max_ok_regression(self):
+        """``min_size=2, max_size=5`` のような正常範囲は OK (回帰)."""
+        render, calls = _recorder()
+        items = [FlexItem(sizing="grow", render=render, min_size=2.0, max_size=5.0)]
+        allocs = add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row",
+        )
+        assert len(allocs) == 1
+        # grow 1 のみ、max_size=5 でクランプ
+        assert _approx(allocs[0][2], 5.0)
+        assert len(calls) == 1
+
+    def test_min_equals_max_zero_ok(self):
+        """``min_size = max_size = 0`` は退化してはいるが有効 (禁止しない)."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="grow", render=render, min_size=0.0, max_size=0.0)]
+        allocs = add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row",
+        )
+        assert len(allocs) == 1
+        assert _approx(allocs[0][2], 0.0)
+
+    def test_min_equals_max_positive_ok(self):
+        """``min_size = max_size = 3`` は有効 (固定サイズに相当)."""
+        render, _ = _recorder()
+        items = [FlexItem(sizing="grow", render=render, min_size=3.0, max_size=3.0)]
+        allocs = add_flex_container(
+            slide=None,
+            items=items,
+            left=0.0, top=0.0, width=10.0, height=1.0,
+            direction="row",
+        )
+        assert _approx(allocs[0][2], 3.0)
+
+
+# --- #72: 宣言的 (MCP) パスでもエントリ検証が効くか ------------------------
+
+
+class TestDeclarativeValidationFlow:
+    """``_build_declarative_item`` は検証を行わず、``add_flex_container``
+    エントリ側の ``_validate_items`` がエラーを送出する (呼び出し順の確認)."""
+
+    def test_declarative_min_gt_max_raises_in_container(self):
+        from pptx_mcp_server.engine.flex import _build_declarative_item
+
+        created: list = []
+        # _build_declarative_item は通常どおり構築する
+        item = _build_declarative_item(
+            slide=None,
+            spec={
+                "type": "text",
+                "text": "x",
+                "sizing": "grow",
+                "min_size": 5.0,
+                "max_size": 3.0,
+            },
+            created_shape_indices=created,
+        )
+        assert item.min_size == 5.0
+        assert item.max_size == 3.0
+        # エントリポイントで拒否される
+        with pytest.raises(EngineError) as excinfo:
+            add_flex_container(
+                slide=None,
+                items=[item],
+                left=0.0, top=0.0, width=10.0, height=1.0,
+                direction="row",
+            )
+        assert excinfo.value.code == ErrorCode.INVALID_PARAMETER
+        msg = str(excinfo.value)
+        assert "items[0]" in msg
+        assert "min_size" in msg
+        assert "max_size" in msg
