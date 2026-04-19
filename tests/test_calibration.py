@@ -97,11 +97,9 @@ def cjk_font() -> str:
 
 # --- ASCII キャリブレーション ---
 
-# 「平均幅に近い」文字のみを per-char テスト対象にする。
-# ``i`` / ``l`` / ``M`` / ``W`` / 空白などは advance 幅が平均から大きく外れる
-# (Arial 12pt で ``i``=0.037", ``M``=0.139", ``' '``=0.039" vs 推定 0.100")
-# ため、平均モデルのヒューリスティックとは per-char 比較の意味が薄い。
-# これらは後段の混在文字列テストで束ねて評価する。
+# 3-tier バケットモデル (#69) 導入後は per-char テスト対象に narrow / wide の
+# sentinel (``i``, ``l``, ``M``, ``W``) も含める。単一定数モデル時代に必要だった
+# 「4× 境界のみ」の workaround は不要になった。
 @pytest.mark.parametrize(
     ("char", "size_pt"),
     [
@@ -114,49 +112,38 @@ def cjk_font() -> str:
         ("9", 12),
         ("e", 12),
         ("o", 12),
+        ("i", 12),
+        ("l", 12),
+        ("M", 12),
+        ("W", 12),
     ],
 )
 def test_ascii_per_char_calibration(arial_font: str, char: str, size_pt: float) -> None:
-    """平均幅に近い ASCII 文字について ±35% 以内で推定できることを確認する."""
+    """ASCII 文字について ±20% 以内で推定できることを確認する.
+
+    #69 の 3-tier バケットモデル導入により narrow (``i``/``l``) と
+    wide (``M``/``W``) も同一の許容帯で扱えるようになった。
+    """
     measured = advance_width_inches(arial_font, char, size_pt)
     estimated = estimate_char_width(char, size_pt)
     rel_err = abs(estimated - measured) / measured
-    assert rel_err <= 0.35, (
+    assert rel_err <= 0.20, (
         f"char={char!r} pt={size_pt}: estimated={estimated:.4f} "
         f"vs measured={measured:.4f} ({rel_err * 100:.1f}% off)"
     )
 
 
-def test_ascii_narrow_and_wide_chars_are_bounded(arial_font: str) -> None:
-    """極端に narrow/wide な字について「桁違いにはならない」境界確認.
-
-    ``i``(narrow) と ``M``(wide) は平均幅モデルと per-char では最大 ±200%
-    ほど乖離する。ここでは推定値が `[実測幅/4, 実測幅*4]` の枠内に
-    収まることのみをチェックする (誤差のオーダーが 10 倍レベルに
-    膨らんだら落ちる)。
-    """
-    for ch in ("i", "M", "W", "l"):
-        m = advance_width_inches(arial_font, ch, 12)
-        e = estimate_char_width(ch, 12)
-        assert m / 4 <= e <= m * 4, (
-            f"char={ch!r}: estimated={e:.4f} outside [{m / 4:.4f}, {m * 4:.4f}]"
-        )
-
-
 def test_ascii_mixed_string_calibration(arial_font: str) -> None:
-    """代表的な混在文字列に対して ±25% 以内で推定できることを確認する.
+    """代表的な混在文字列に対して ±10% 以内で推定できることを確認する.
 
-    実測では +21% 程度の過大評価となる (空白と narrow 文字を平均幅で
-    計上する系統的バイアス)。レイアウト用途では conservative な過大
-    評価は overflow を避ける方向に働くため実害は小さい。
-    将来ヒューリスティックを再キャリブレーションする際にこのテストを
-    tighter な帯に絞り込み直すことを想定している。
+    #69 の 3-tier バケットモデル導入前は +21% 過大評価だったが、
+    narrow/normal/wide を別定数化したことで系統的バイアスが解消された。
     """
     sample = "Hello World 12345 McKinsey"
     measured = sum(advance_width_inches(arial_font, ch, 12) for ch in sample)
     estimated = estimate_text_width(sample, 12)
     rel_err = abs(estimated - measured) / measured
-    assert rel_err <= 0.25, (
+    assert rel_err <= 0.10, (
         f"estimated={estimated:.3f} vs measured={measured:.3f} "
         f"({rel_err * 100:.1f}% off)"
     )

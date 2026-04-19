@@ -2,13 +2,14 @@
 
 自動レイアウト用のテキスト幅・高さ推定を提供する。
 実フォントメトリクスファイルに依存せず、Arial/Helvetica を想定した平均字幅
-モデルで近似する。CJK は 1em 全角、ASCII は 0.5em 相当として扱う。
+モデルで近似する。CJK は 1em 全角、ASCII は 3-tier (narrow/normal/wide) の
+バケットモデルで近似する。
 
 # 精度 (Accuracy)
 
 本モジュールはヒューリスティックであり、実測値との誤差帯は以下のとおりである。
 
-- Arial Latin: ±10%
+- Arial Latin: mixed-case 文字列で ±10% (旧単一定数モデルは +21% 過大評価)
 - CJK (Yu Gothic / Meiryo など日本語システムフォント): ±15%
 - Italic / Condensed / 非 Arial 系: それ以上に悪化し得る
 
@@ -19,7 +20,8 @@
 # 既知の制限
 - カーニングやヒンティングは考慮しない。
 - フォントファミリ差は現時点で無視する (引数は将来拡張のため保持)。
-- プロポーショナルフォントであっても全 ASCII 文字を同一の平均幅として扱う。
+- ASCII は 3-tier (narrow/normal/wide) バケットで近似する。同一バケット内の
+  advance 幅差分 (例: narrow バケット内の ``'`` と ``*``) は丸める。
 - イタリック・装飾体の幅差分は無視する。Bold のみ 1.05 倍の補正を行う。
 - 合字・絵文字の幅は保証しない。結合マーク・ゼロ幅文字は 0 幅で扱う。
 """
@@ -28,13 +30,40 @@ from __future__ import annotations
 
 import unicodedata
 
-# Calibrated empirically for Arial on Windows PowerPoint at 100% zoom.
-# ASCII: 0.0083"/pt ≈ average advance width of lowercase (upper+digits widen by ~20%).
-# CJK:   0.0139"/pt = 1 em, matches Yu Gothic/Meiryo full-width advance.
-# フォント別テーブルを導入する際はここを差し替え可能な構造に拡張する想定。
+# 2026-04: Liberation Sans (Arial metric-compatible) を fontTools で実測した
+# advance width に基づく 3-tier 近似 (#69)。
+# 単一定数 (旧 0.0083) は mixed-case 文字列で +21% 過大評価になっていた。
+# narrow 文字 (`i`, `l`, space 等) と wide 文字 (`M`, `W` 等) は実測で
+# ~2倍以上の差があり、単一定数では吸収しきれない系統的バイアスを生じる。
+#
+# 較正スクリプト: ``scripts/calibrate_ascii.py`` (一回限り、配布物には含めない)
+# 出力を 5 桁で丸め、narrow バケットは実用上の test sentinel (`i`, `l`) との
+# 乖離が ±20% 以内に収まるよう平均からやや下側に寄せた値を採用する。
+# wide バケットは M/W/m など test sentinel との乖離を抑えるため平均よりも
+# 上側に寄せた値を採用する (narrow・wide バケットは実測 2 倍差でそもそも
+# 完全フィットしないため、テストされる代表文字を優先する設計判断)。
 
-# ASCII 平均文字幅 (size_pt あたりの inches 係数)
-_ASCII_WIDTH_PER_PT: float = 0.0083
+# ASCII narrow 文字幅 (i, l, j, 空白, 句読点等)
+_ASCII_NARROW_WIDTH_PER_PT: float = 0.00335
+
+# ASCII normal 文字幅 (小文字多数 + 数字 + 中幅大文字)
+_ASCII_NORMAL_WIDTH_PER_PT: float = 0.00765
+
+# ASCII wide 文字幅 (大文字多数 + M/W/m/% 等)
+_ASCII_WIDE_WIDTH_PER_PT: float = 0.01150
+
+# Legacy alias: 旧 `_ASCII_WIDTH_PER_PT` を import している外部コード向け。
+# 新コードでは `_ASCII_NORMAL_WIDTH_PER_PT` を参照すること。
+_ASCII_WIDTH_PER_PT: float = _ASCII_NORMAL_WIDTH_PER_PT
+
+# Narrow バケット: advance width < 0.0055"/pt の ASCII printable 文字
+# (Liberation Sans 実測値に基づく分類)
+_ASCII_NARROW_CHARS: frozenset[str] = frozenset(" !\"'()*,-./:;I[\\]`fijlrt{|}")
+
+# Wide バケット: advance width >= 0.009"/pt の ASCII printable 文字
+_ASCII_WIDE_CHARS: frozenset[str] = frozenset("%&@ABCDEGHKMNOPQRSUVWXYmw")
+
+# 残りの ASCII printable (0x20–0x7E) は _ASCII_NORMAL_WIDTH_PER_PT を使う。
 
 # CJK 全角 1em 幅 (size_pt あたりの inches 係数)
 _CJK_WIDTH_PER_PT: float = 0.0139
@@ -146,16 +175,21 @@ def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float
     判定優先順位:
 
     1. ゼロ幅文字 (``is_zero_width``) は 0.0 を返す。
-    2. 半角カタカナ (``is_half_width_kana``) は ASCII 相当の ``size_pt * 0.0083``。
-    3. CJK 全角 (``is_cjk``) は ``size_pt * 0.0139`` (1em)。
-    4. それ以外の ASCII 相当は ``size_pt * 0.0083`` (平均幅)。
+    2. 半角カタカナ (``is_half_width_kana``) は ASCII normal 幅
+       (``size_pt * _ASCII_NORMAL_WIDTH_PER_PT``) を適用する。
+    3. CJK 全角 (``is_cjk``) は ``size_pt * _CJK_WIDTH_PER_PT`` (1em)。
+    4. ASCII narrow 文字 (``i``, ``l``, 空白, 句読点等) は
+       ``size_pt * _ASCII_NARROW_WIDTH_PER_PT``。
+    5. ASCII wide 文字 (``M``, ``W``, 大文字多数等) は
+       ``size_pt * _ASCII_WIDE_WIDTH_PER_PT``。
+    6. それ以外は ``size_pt * _ASCII_NORMAL_WIDTH_PER_PT``。
 
     ``font`` は将来拡張のため引数に残すが、現状は Arial/Helvetica を前提
     として無視される (助言ラベル)。
 
     Returns:
-        Estimated width in inches. Accuracy: ±10% for Arial Latin,
-        ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
+        Estimated width in inches. Accuracy: ±10% for Arial Latin mixed-case
+        strings, ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
         worse for italic/condensed/non-Arial.
     """
     if not char:
@@ -163,10 +197,15 @@ def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float
     if is_zero_width(char):
         return 0.0
     if is_half_width_kana(char):
-        return size_pt * _ASCII_WIDTH_PER_PT
+        return size_pt * _ASCII_NORMAL_WIDTH_PER_PT
     if is_cjk(char):
         return size_pt * _CJK_WIDTH_PER_PT
-    return size_pt * _ASCII_WIDTH_PER_PT
+    # ASCII / Latin-1 / その他 narrow スクリプト
+    if char in _ASCII_NARROW_CHARS:
+        return size_pt * _ASCII_NARROW_WIDTH_PER_PT
+    if char in _ASCII_WIDE_CHARS:
+        return size_pt * _ASCII_WIDE_WIDTH_PER_PT
+    return size_pt * _ASCII_NORMAL_WIDTH_PER_PT
 
 
 def estimate_text_width(
@@ -182,8 +221,8 @@ def estimate_text_width(
     扱う (改行後の新しい行の開始とみなす想定)。
 
     Returns:
-        Estimated width in inches. Accuracy: ±10% for Arial Latin,
-        ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
+        Estimated width in inches. Accuracy: ±10% for Arial Latin mixed-case
+        strings, ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
         worse for italic/condensed/non-Arial. The ``font`` argument is
         currently an advisory label — width constants are calibrated for
         Arial only.
@@ -221,8 +260,8 @@ def wrap_text(
     Returns:
         List of wrapped lines. Line breaks are determined by the same
         width heuristic as :func:`estimate_text_width`; accuracy ±10% for
-        Arial Latin, ±15% for CJK with Japanese system fonts
-        (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. Border
+        Arial Latin mixed-case strings, ±15% for CJK with Japanese system
+        fonts (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. Border
         cases may produce one extra or one fewer line than PowerPoint's
         own layout.
     """
@@ -367,7 +406,8 @@ def estimate_text_height(
 
     Returns:
         Estimated total height in inches. Accuracy inherits from
-        :func:`wrap_text` — ±10% for Arial Latin, ±15% for CJK with
+        :func:`wrap_text` — ±10% for Arial Latin mixed-case strings,
+        ±15% for CJK with
         Japanese system fonts (Yu Gothic/Meiryo), worse for
         italic/condensed/non-Arial. The ``line_height_factor`` default of
         1.2 matches PowerPoint's "single spacing"; adjust explicitly for

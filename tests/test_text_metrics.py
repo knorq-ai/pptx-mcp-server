@@ -141,16 +141,17 @@ class TestEstimateTextWidth:
         assert width == pytest.approx(1.050, abs=0.01)
 
     def test_ascii_hello_world(self) -> None:
-        # "Hello World" = 11 文字 × 12pt × 0.0083 ≈ 1.096 inches
+        # "Hello World" = H(wide) e(norm) l(narr) l(narr) o(norm) ' '(narr)
+        #                 W(wide) o(norm) r(narr) l(narr) d(norm)
+        # = 2 wide + 4 normal + 5 narrow @ 12pt
         width = estimate_text_width("Hello World", 12)
-        expected = 12 * 11 * 0.0083
+        expected = 12 * (2 * 0.01150 + 4 * 0.00765 + 5 * 0.00335)
         assert width == pytest.approx(expected, abs=0.01)
-        assert width == pytest.approx(1.096, abs=0.01)
 
     def test_mixed_ai_seikatsusha(self) -> None:
-        # "AI生活者" = 2 ASCII + 3 CJK @ 10pt
+        # "AI生活者" = A(wide) + I(narrow) + 3 CJK @ 10pt
         width = estimate_text_width("AI生活者", 10)
-        expected = 2 * 10 * 0.0083 + 3 * 10 * 0.0139
+        expected = 10 * 0.01150 + 10 * 0.00335 + 3 * 10 * 0.0139
         assert width == pytest.approx(expected, abs=0.001)
 
     def test_empty_string_has_zero_width(self) -> None:
@@ -173,7 +174,8 @@ class TestEstimateCharWidth:
     """estimate_char_width のスポットチェック."""
 
     def test_ascii_char(self) -> None:
-        assert estimate_char_width("a", 10) == pytest.approx(10 * 0.0083, abs=0.0001)
+        # "a" は ASCII normal バケット。
+        assert estimate_char_width("a", 10) == pytest.approx(10 * 0.00765, abs=0.0001)
 
     def test_cjk_char(self) -> None:
         assert estimate_char_width("あ", 10) == pytest.approx(10 * 0.0139, abs=0.0001)
@@ -236,9 +238,9 @@ class TestEstimateTextWidthExtended:
         assert width == pytest.approx(expected, abs=0.001)
 
     def test_half_width_kana_string(self) -> None:
-        # ｶﾀｶﾅ = 4 × ASCII 幅 (旧実装では 4 × CJK 幅で過大評価されていた)
+        # ｶﾀｶﾅ = 4 × ASCII normal 幅 (旧実装では 4 × CJK 幅で過大評価されていた)
         width = estimate_text_width("ｶﾀｶﾅ", 10)
-        expected = 4 * 10 * 0.0083
+        expected = 4 * 10 * 0.00765
         assert width == pytest.approx(expected, abs=0.001)
 
     def test_zwsp_does_not_add_width(self) -> None:
