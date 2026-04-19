@@ -20,7 +20,7 @@ from .layout_constants import (
     TEXTBOX_INNER_PADDING_PER_SIDE,
     TEXTBOX_INNER_PADDING_TOTAL,
 )
-from .text_metrics import estimate_text_height, estimate_text_width
+from .text_metrics import estimate_text_height, estimate_text_width, wrap_text
 
 # ---------------------------------------------------------------------------
 # 既存互換ヘルパ
@@ -926,6 +926,120 @@ def check_inconsistent_gaps(
     return findings
 
 
+def check_title_wrap(
+    presentation: Presentation,
+    *,
+    title_zone_top_max: float = 1.15,
+    max_lines_title: int = 1,
+    max_lines_subtitle: int = 2,
+    title_font_threshold: float = 14.0,
+) -> List[ValidationFinding]:
+    """タイトルゾーン内の text frame が意図せず wrap していないかを検出する.
+
+    タイトルゾーンは y < ``title_zone_top_max`` (既定 1.15" — McKinsey
+    レイアウトの divider line 位置) に上端を持つ text frame と定義する。
+    タイトル / サブタイトルの区別は以下のヒューリスティックで行う:
+
+    - 段落の実効 font サイズが ``title_font_threshold`` pt 以上 → タイトル
+      扱いで最大 ``max_lines_title`` 行まで許容する。
+    - それ未満 → サブタイトル扱いで最大 ``max_lines_subtitle`` 行まで許容する。
+
+    各段落で ``wrap_text`` を段落の実効 font サイズで実行し、折り返し後の
+    行数合計が許容値を超える場合に ``warning`` / category ``title_wrap`` の
+    finding を返す。suggested_fix には issue #79 の推奨パターン (font 縮小
+    もしくは ``add_auto_fit_textbox(..., wrap=False)`` の利用) を提示する。
+    """
+    findings: List[ValidationFinding] = []
+
+    for slide_index, slide in enumerate(presentation.slides):
+        for shape_i, shape in enumerate(slide.shapes):
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            if not shape.has_text_frame:
+                continue
+
+            s_top = _emu_to_in(shape.top)
+            if s_top >= title_zone_top_max:
+                # タイトルゾーン外 (body content) はスキップ
+                continue
+
+            frame_width = _emu_to_in(shape.width)
+            if frame_width <= 0.1:
+                continue
+
+            tf = shape.text_frame
+            text = _full_text(tf)
+            if not text.strip():
+                continue
+
+            usable_width = max(0.1, frame_width - TEXTBOX_INNER_PADDING_TOTAL)
+
+            # 段落単位で行数を合算する。代表 font size も記録する。
+            total_lines = 0
+            representative_pt: Optional[float] = None
+            for para in tf.paragraphs:
+                para_text = _paragraph_text(para)
+                pt = _effective_paragraph_size(para, default_pt=18.0)
+                if representative_pt is None or pt > representative_pt:
+                    representative_pt = pt
+                if not para_text:
+                    total_lines += 1
+                    continue
+                lines = wrap_text(para_text, usable_width, pt)
+                total_lines += max(1, len(lines))
+
+            if representative_pt is None:
+                representative_pt = 18.0
+
+            # タイトル / サブタイトルの区別
+            is_title = representative_pt >= title_font_threshold
+            max_lines = max_lines_title if is_title else max_lines_subtitle
+            role = "title" if is_title else "subtitle"
+
+            if total_lines > max_lines:
+                name = _shape_name(shape, f"Shape {shape_i}")
+                # suggested font: 単一行に収めたい場合は幅ベースで推定する。
+                # 現 pt を起点に 0.5pt ステップで estimate_text_width が
+                # usable_width 以下になる size を探す (ヒント用途なので軽量)。
+                fit_pt: Optional[float] = None
+                candidate = representative_pt - 0.5
+                while candidate >= 6.0:
+                    if estimate_text_width(text, candidate) <= usable_width:
+                        fit_pt = candidate
+                        break
+                    candidate -= 0.5
+
+                if fit_pt is not None:
+                    suggested = (
+                        f"reduce font {representative_pt:.1f}pt → {fit_pt:.1f}pt "
+                        f"to fit single line, or use "
+                        f"`add_auto_fit_textbox(..., wrap=False)`"
+                    )
+                else:
+                    suggested = (
+                        f"shorten {role} text, or use "
+                        f"`add_auto_fit_textbox(..., wrap=False, "
+                        f"truncate_with_ellipsis=True)`"
+                    )
+
+                findings.append(
+                    ValidationFinding(
+                        severity="warning",
+                        slide_index=slide_index,
+                        shape_name=name,
+                        category="title_wrap",
+                        message=(
+                            f"{role} wraps to {total_lines} lines "
+                            f"(max {max_lines}) at {representative_pt:.1f}pt "
+                            f"in {frame_width:.2f}\" frame"
+                        ),
+                        suggested_fix=suggested,
+                    )
+                )
+
+    return findings
+
+
 def check_deck_extended(
     presentation: Presentation,
     *,
@@ -934,6 +1048,10 @@ def check_deck_extended(
     axis_tolerance: float = 0.1,
     gap_tolerance: float = 0.05,
     whitelist_names: Optional[List[str]] = None,
+    title_zone_top_max: float = 1.15,
+    max_lines_title: int = 1,
+    max_lines_subtitle: int = 2,
+    title_font_threshold: float = 14.0,
 ) -> Dict[str, Any]:
     """deck 全体を走査し、既存 + 拡張チェックをまとめて返す.
 
@@ -949,6 +1067,7 @@ def check_deck_extended(
                     "unreadable_text": [...],
                     "divider_collision": [...],
                     "inconsistent_gaps": [...],
+                    "title_wrap": [...],
                 },
                 ...
             ],
@@ -967,6 +1086,7 @@ def check_deck_extended(
         - ``divider_collision`` (``check_divider_collision``)
     - ``warnings``:
         - ``unreadable_text`` (``check_unreadable_text``)
+        - ``title_wrap`` (``check_title_wrap``)
     - ``infos``:
         - ``inconsistent_gaps`` (``check_inconsistent_gaps``)
 
@@ -993,6 +1113,13 @@ def check_deck_extended(
         axis_tolerance=axis_tolerance,
         gap_tolerance=gap_tolerance,
     )
+    title_wrap = check_title_wrap(
+        presentation,
+        title_zone_top_max=title_zone_top_max,
+        max_lines_title=max_lines_title,
+        max_lines_subtitle=max_lines_subtitle,
+        title_font_threshold=title_font_threshold,
+    )
 
     # slide index ごとに集約
     by_slide: Dict[int, Dict[str, List[Any]]] = {}
@@ -1011,6 +1138,7 @@ def check_deck_extended(
             "unreadable_text": [],
             "divider_collision": [],
             "inconsistent_gaps": [],
+            "title_wrap": [],
         }
 
     def _place(findings: List[ValidationFinding], key: str) -> None:
@@ -1024,6 +1152,7 @@ def check_deck_extended(
     _place(unreadable, "unreadable_text")
     _place(divider, "divider_collision")
     _place(gaps, "inconsistent_gaps")
+    _place(title_wrap, "title_wrap")
 
     slides_out = [by_slide[i] for i in sorted(by_slide.keys())]
 
@@ -1034,6 +1163,7 @@ def check_deck_extended(
         errors += len(slide_data["overlaps"])
         errors += len(slide_data["out_of_bounds"])
     warnings_count = sum(1 for f in unreadable if f.severity == "warning")
+    warnings_count += sum(1 for f in title_wrap if f.severity == "warning")
     infos = sum(1 for f in gaps if f.severity == "info")
 
     return {

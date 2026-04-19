@@ -588,6 +588,61 @@ def _fit_font_size(
     return min_size, height_est <= height
 
 
+def _fit_font_size_single_line(
+    text: str,
+    usable_width: float,
+    font_name: str,
+    font_size_pt: float,
+    min_size_pt: float,
+) -> tuple[float, bool]:
+    """単一行描画を前提に width に収まる最大 font size を 0.5pt 刻みで決定する.
+
+    ``wrap=False`` モードで使う。高さは参照せず、``estimate_text_width`` が
+    ``usable_width`` 以下となる最大 size を返す。min_size に達してもなお
+    幅を超える場合は ``(min_size, False)`` を返す。
+
+    Returns:
+        (size, fits): ``size`` は採用する font size、``fits`` は決定 size で
+        実際に単一行 width に収まるかどうか。
+    """
+    size = float(font_size_pt)
+    min_size = float(min_size_pt)
+    while size > min_size:
+        width_est = estimate_text_width(text, size, font_name)
+        if width_est <= usable_width:
+            return size, True
+        size = round(size - _AUTO_FIT_STEP_PT, 2)
+    # min_size でチェック
+    width_est = estimate_text_width(text, min_size, font_name)
+    return min_size, width_est <= usable_width
+
+
+def _truncate_to_fit_single_line(
+    text: str,
+    usable_width: float,
+    font_name: str,
+    size_pt: float,
+) -> str:
+    """``size_pt`` の size で ``usable_width`` に収まるよう末尾を省略記号で切り
+    詰める (単一行版).
+
+    ``_truncate_to_fit`` は wrap を前提としているため、``wrap=False`` モード用に
+    行頭から grapheme cluster を 1 つずつ削りながら ``text + 省略記号`` の幅が
+    ``usable_width`` 以下になるまで縮める専用実装を用意する。省略記号単体でも
+    収まらない場合は省略記号のみを返す。
+    """
+    if not text:
+        return text
+    candidate = text
+    while candidate and estimate_text_width(candidate + _ELLIPSIS, size_pt, font_name) > usable_width:
+        new_candidate = _strip_last_grapheme(candidate)
+        if new_candidate == candidate:
+            # 保険: 進まない場合は code unit で 1 文字削る。
+            new_candidate = candidate[:-1]
+        candidate = new_candidate
+    return (candidate + _ELLIPSIS) if candidate else _ELLIPSIS
+
+
 def _strip_last_grapheme(s: str) -> str:
     """``s`` の末尾 grapheme cluster (近似) を 1 つ除去した文字列を返す.
 
@@ -715,10 +770,11 @@ def add_auto_fit_textbox(
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
     east_asian_font: str | None = None,
+    wrap: bool = True,
 ) -> tuple[object, float]:
     """指定 box に収まる最大 font size でテキストを描画する.
 
-    動作:
+    動作 (``wrap=True``、既定):
         (a) 内側 padding 0.05" を左右に見込んで usable width を計算する。
         (b) ``font_size_pt`` から開始し、``estimate_text_height(wrapped)`` が
             ``height`` 以下になるまで 0.5pt 刻みで縮小する。
@@ -728,6 +784,16 @@ def add_auto_fit_textbox(
             を許容する。
         (d) 決定した font size で ``_add_textbox`` 経由で textframe を生成し、
             ``vertical_anchor`` に応じて ``MSO_ANCHOR`` を設定する。
+
+    動作 (``wrap=False``):
+        単一行描画モード。アクションタイトル・KPI 値のように折り返しを
+        許容しないユースケース向け。高さではなく幅で font size を縮小する。
+        具体的には (a) で得た usable width に対し、``estimate_text_width``
+        が usable width 以下となる最大 size を 0.5pt 刻みで探す。``min_size_pt``
+        に達しても幅を超える場合の振る舞いは ``truncate_with_ellipsis`` に
+        従う (True なら末尾を省略記号で切り詰め、False なら clip を許容して
+        そのまま描画)。生成 textbox には ``word_wrap=False`` を設定し、
+        PowerPoint 側でも自動折り返しが発生しないようにする。
 
     Args:
         slide: 対象スライドオブジェクト。
@@ -742,21 +808,34 @@ def add_auto_fit_textbox(
         vertical_anchor: 垂直方向の揃え ``"top" | "middle" | "bottom"``。
         truncate_with_ellipsis: min size でも収まらない場合に末尾を
             省略記号で切り詰めるかどうか。
+        east_asian_font: 東アジア用フォント名 (省略時は theme の既定値等)。
+        wrap: True なら高さベースで auto-fit し折り返しを許容する。False なら
+            幅ベースで auto-fit し単一行を維持する (``word_wrap=False`` を
+            textbox に適用)。既定は後方互換のため True。
 
     Returns:
         ``(shape, actual_font_size)`` のタプル。テスト・デバッグ用途。
     """
     usable_width = max(width - 2 * _AUTO_FIT_PADDING, 0.01)
 
-    actual_size, fits = _fit_font_size(
-        text, usable_width, height, font_name, font_size_pt, min_size_pt,
-    )
-
-    rendered_text = text
-    if not fits and truncate_with_ellipsis:
-        rendered_text = _truncate_to_fit(
-            text, usable_width, height, font_name, actual_size,
+    if wrap:
+        actual_size, fits = _fit_font_size(
+            text, usable_width, height, font_name, font_size_pt, min_size_pt,
         )
+        rendered_text = text
+        if not fits and truncate_with_ellipsis:
+            rendered_text = _truncate_to_fit(
+                text, usable_width, height, font_name, actual_size,
+            )
+    else:
+        actual_size, fits = _fit_font_size_single_line(
+            text, usable_width, font_name, font_size_pt, min_size_pt,
+        )
+        rendered_text = text
+        if not fits and truncate_with_ellipsis:
+            rendered_text = _truncate_to_fit_single_line(
+                text, usable_width, font_name, actual_size,
+            )
 
     idx = _add_textbox(
         slide,
@@ -769,7 +848,7 @@ def add_auto_fit_textbox(
         italic=None,
         alignment=align,
         vertical_anchor=vertical_anchor,
-        word_wrap=True,
+        word_wrap=wrap,
         line_spacing=None,
         underline=None,
         east_asian_font=east_asian_font,
@@ -777,7 +856,7 @@ def add_auto_fit_textbox(
 
     shape = slide.shapes[idx]
     tf = shape.text_frame
-    tf.word_wrap = True
+    tf.word_wrap = wrap
     # auto_size は手動でサイズ決定済みなので明示的に None にする。
     tf.auto_size = None
     if vertical_anchor in _ANCHOR_MAP:
@@ -802,6 +881,7 @@ def add_auto_fit_textbox_file(
     align: str = "left",
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
+    wrap: bool = True,
 ) -> dict:
     """File-based wrapper: 指定 box に収まるよう自動縮小する textbox を追加する.
 
@@ -821,6 +901,7 @@ def add_auto_fit_textbox_file(
         align=align,
         vertical_anchor=vertical_anchor,
         truncate_with_ellipsis=truncate_with_ellipsis,
+        wrap=wrap,
     )
     # shape_index を決定 (slide 内で shape を線形検索)
     shape_index = -1

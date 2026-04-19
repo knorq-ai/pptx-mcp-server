@@ -77,6 +77,115 @@ def test_vertical_anchor_middle(slide):
     assert shape.text_frame.vertical_anchor == MSO_ANCHOR.MIDDLE
 
 
+# ---------------------------------------------------------------------------
+# Issue #79: wrap=False モード
+# ---------------------------------------------------------------------------
+
+
+class TestWrapFalse:
+    """``wrap=False`` で単一行 auto-fit と word_wrap=False が機能することを検証する."""
+
+    def test_short_title_wide_frame_no_shrink(self, slide):
+        """短いタイトル + 余裕のある幅なら font size は縮まない."""
+        shape, actual = add_auto_fit_textbox(
+            slide,
+            "Short title",
+            left=0.9, top=0.45, width=11.533, height=0.55,
+            font_size_pt=22, min_size_pt=12,
+            wrap=False,
+        )
+        assert actual == 22.0
+        assert shape.text_frame.word_wrap is False
+
+    def test_long_japanese_title_shrinks_until_single_line_fits(self, slide):
+        """長い日本語タイトル + 11.533"×0.55" + wrap=False で単一行に収まる size まで縮む.
+
+        Issue #79 の production シナリオ再現。``wrap=False`` では width 基準で
+        縮み、``estimate_text_width`` が usable width 以下になった時点で停止する。
+        20pt で開始 → 幅超過のため縮小 → 収まる size まで下がる。
+        """
+        from pptx_mcp_server.engine.text_metrics import estimate_text_width
+        from pptx_mcp_server.engine.layout_constants import (
+            TEXTBOX_INNER_PADDING_TOTAL,
+        )
+
+        title = (
+            "Mac乗り換え検討者に対してLenovoはほぼ不可視 — "
+            "「Macに匹敵する体験をWindowsで」のナラティブが不在"
+        )
+        shape, actual = add_auto_fit_textbox(
+            slide,
+            title,
+            left=0.9, top=0.45, width=11.533, height=0.55,
+            font_size_pt=20, min_size_pt=12,
+            wrap=False,
+        )
+        # 開始の 20pt では幅超過するため必ず縮む
+        assert actual < 20.0
+        # min_size_pt 以上には留まる
+        assert actual >= 12.0
+        # 決定 size で実際に単一行 width に収まっている
+        usable = 11.533 - TEXTBOX_INNER_PADDING_TOTAL
+        assert estimate_text_width(title, actual) <= usable + 1e-6
+        # PowerPoint 側でも wrap しない
+        assert shape.text_frame.word_wrap is False
+
+    def test_min_size_still_over_truncates(self, slide):
+        """min size でも幅を超える場合、truncate_with_ellipsis=True で末尾省略."""
+        huge = "これは非常に長いタイトルです。" * 10
+        shape, actual = add_auto_fit_textbox(
+            slide,
+            huge,
+            left=0.9, top=0.45, width=3.0, height=0.55,
+            font_size_pt=20, min_size_pt=12,
+            wrap=False,
+            truncate_with_ellipsis=True,
+        )
+        assert actual == 12.0
+        rendered = shape.text_frame.text
+        assert rendered.endswith("\u2026")
+        # 切り詰め後の幅は usable width 以下
+        from pptx_mcp_server.engine.text_metrics import estimate_text_width
+        from pptx_mcp_server.engine.layout_constants import (
+            TEXTBOX_INNER_PADDING_TOTAL,
+        )
+
+        usable = 3.0 - TEXTBOX_INNER_PADDING_TOTAL
+        assert estimate_text_width(rendered, actual) <= usable + 1e-6
+
+    def test_min_size_still_over_no_truncate_preserves_text(self, slide):
+        """truncate=False なら min_size で full text を保持する (clip 許容)."""
+        huge = "これは非常に長いタイトルです。" * 10
+        shape, actual = add_auto_fit_textbox(
+            slide,
+            huge,
+            left=0.9, top=0.45, width=3.0, height=0.55,
+            font_size_pt=20, min_size_pt=12,
+            wrap=False,
+            truncate_with_ellipsis=False,
+        )
+        assert actual == 12.0
+        assert shape.text_frame.text == huge
+        assert "\u2026" not in shape.text_frame.text
+        assert shape.text_frame.word_wrap is False
+
+    def test_default_wrap_true_unchanged(self, slide):
+        """回帰: wrap 指定なし (既定 True) は従来通り高さベースで縮む.
+
+        既存テスト ``test_long_japanese_in_narrow_box_shrinks`` と同等シナリオで
+        word_wrap が True のまま残ることを確認する。
+        """
+        long_jp = "これは日本語のテキストサンプルです。" * 6
+        shape, actual = add_auto_fit_textbox(
+            slide,
+            long_jp,
+            left=1.0, top=1.0, width=3.0, height=0.8,
+            font_size_pt=14, min_size_pt=7,
+        )
+        assert actual < 14.0
+        assert shape.text_frame.word_wrap is True
+
+
 def test_production_subtitle_11_5x0_5(slide):
     """production-like: 約 120 文字の日本語を 11.5" x 0.5" の箱に流し込む.
 
