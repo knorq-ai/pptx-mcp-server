@@ -33,8 +33,9 @@ mcp = ["mcp>=1.0.0"]
 test = ["pytest>=7", "fontTools>=4.40"]
 
 [project.urls]
-Homepage = "https://github.com/knorq/pptx-mcp-server"
-Repository = "https://github.com/knorq/pptx-mcp-server"
+Homepage = "https://github.com/knorq-ai/pptx-mcp-server"
+Repository = "https://github.com/knorq-ai/pptx-mcp-server"
+Issues = "https://github.com/knorq-ai/pptx-mcp-server/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pptx_mcp_server"]
