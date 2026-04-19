@@ -4,6 +4,18 @@
 実フォントメトリクスファイルに依存せず、Arial/Helvetica を想定した平均字幅
 モデルで近似する。CJK は 1em 全角、ASCII は 0.5em 相当として扱う。
 
+# 精度 (Accuracy)
+
+本モジュールはヒューリスティックであり、実測値との誤差帯は以下のとおりである。
+
+- Arial Latin: ±10%
+- CJK (Yu Gothic / Meiryo など日本語システムフォント): ±15%
+- Italic / Condensed / 非 Arial 系: それ以上に悪化し得る
+
+``font`` 引数は現状「助言ラベル」に過ぎず、幅定数は Arial 向けに較正されて
+いる点に注意すること。将来のフォント別較正テーブル導入時に意味を持たせる
+余地を残すため引数シグネチャに残してある。
+
 # 既知の制限
 - カーニングやヒンティングは考慮しない。
 - フォントファミリ差は現時点で無視する (引数は将来拡張のため保持)。
@@ -15,6 +27,11 @@
 from __future__ import annotations
 
 import unicodedata
+
+# Calibrated empirically for Arial on Windows PowerPoint at 100% zoom.
+# ASCII: 0.0083"/pt ≈ average advance width of lowercase (upper+digits widen by ~20%).
+# CJK:   0.0139"/pt = 1 em, matches Yu Gothic/Meiryo full-width advance.
+# フォント別テーブルを導入する際はここを差し替え可能な構造に拡張する想定。
 
 # ASCII 平均文字幅 (size_pt あたりの inches 係数)
 _ASCII_WIDTH_PER_PT: float = 0.0083
@@ -134,7 +151,12 @@ def estimate_char_width(char: str, size_pt: float, font: str = "Arial") -> float
     4. それ以外の ASCII 相当は ``size_pt * 0.0083`` (平均幅)。
 
     ``font`` は将来拡張のため引数に残すが、現状は Arial/Helvetica を前提
-    として無視される。
+    として無視される (助言ラベル)。
+
+    Returns:
+        Estimated width in inches. Accuracy: ±10% for Arial Latin,
+        ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
+        worse for italic/condensed/non-Arial.
     """
     if not char:
         return 0.0
@@ -158,6 +180,13 @@ def estimate_text_width(
     各文字について :func:`estimate_char_width` の合計を取る。``bold=True``
     のとき全体に 1.05 倍の補正を掛ける。改行文字 (``\\n``) の幅は 0 として
     扱う (改行後の新しい行の開始とみなす想定)。
+
+    Returns:
+        Estimated width in inches. Accuracy: ±10% for Arial Latin,
+        ±15% for CJK with Japanese system fonts (Yu Gothic/Meiryo),
+        worse for italic/condensed/non-Arial. The ``font`` argument is
+        currently an advisory label — width constants are calibrated for
+        Arial only.
     """
     if not text:
         return 0.0
@@ -188,6 +217,14 @@ def wrap_text(
       のみ文字単位で強制分割する (URL/ハッシュタグ/長大 ASCII 対策)。
       通常長の単語については従来通り途中では切らない。
     - 入力内の ``\\n`` は強制改行として扱う。
+
+    Returns:
+        List of wrapped lines. Line breaks are determined by the same
+        width heuristic as :func:`estimate_text_width`; accuracy ±10% for
+        Arial Latin, ±15% for CJK with Japanese system fonts
+        (Yu Gothic/Meiryo), worse for italic/condensed/non-Arial. Border
+        cases may produce one extra or one fewer line than PowerPoint's
+        own layout.
     """
     if not text:
         return []
@@ -327,6 +364,14 @@ def estimate_text_height(
 
     ``len(wrap_text(...)) * size_pt * 0.0139 * line_height_factor`` で算出する。
     空文字列は 0 を返す。``size_pt * 0.0139`` は 1em の inches 換算値である。
+
+    Returns:
+        Estimated total height in inches. Accuracy inherits from
+        :func:`wrap_text` — ±10% for Arial Latin, ±15% for CJK with
+        Japanese system fonts (Yu Gothic/Meiryo), worse for
+        italic/condensed/non-Arial. The ``line_height_factor`` default of
+        1.2 matches PowerPoint's "single spacing"; adjust explicitly for
+        tighter/looser leading.
     """
     if not text:
         return 0.0

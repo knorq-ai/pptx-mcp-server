@@ -37,6 +37,7 @@ Repository = "https://github.com/knorq/pptx-mcp-server"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pptx_mcp_server"]
+include = ["src/pptx_mcp_server/py.typed"]
 
 [project.scripts]
 pptx-mcp-server = "pptx_mcp_server:main"
