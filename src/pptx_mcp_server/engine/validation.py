@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from pptx import Presentation
+from pptx.enum.text import MSO_ANCHOR
 from pptx.util import Emu
 
 from .text_metrics import estimate_text_height, estimate_text_width
@@ -440,17 +441,100 @@ def check_text_overflow(
     return findings
 
 
+def _matches_whitelist_names(name: str, whitelist_names: Optional[List[str]]) -> bool:
+    """``whitelist_names`` の任意要素が ``name`` に部分一致するかを返す.
+
+    大文字小文字を区別しない。``whitelist_names`` が None/空の場合は False。
+    """
+    if not whitelist_names:
+        return False
+    lowered = (name or "").lower()
+    for needle in whitelist_names:
+        if not needle:
+            continue
+        if needle.lower() in lowered:
+            return True
+    return False
+
+
+def _is_footer_zone_shape(
+    shape,
+    text_frame,
+    slide_height: float,
+    min_readable_pt: float,
+) -> bool:
+    """フッタゾーン (スライド下端 0.6" 以内) にある小型テキストかをヒューリスティックで判定する.
+
+    条件 (すべて満たす場合に True):
+        1. shape の bounding box 上端が ``slide_height - 0.6`` 以上
+           (すなわち底辺から 0.6" 以内に完全に収まる)
+        2. 推定折返し後の行数 ≤ 3
+        3. 代表フォントサイズが ``min_readable_pt - 1`` 以上
+           (極小フォントはフッタ扱いせず別途 unreadable で検出する)
+
+    名前ベースのホワイトリストを補完するために用いる。
+    """
+    try:
+        s_top = _emu_to_in(shape.top)
+        s_height = _emu_to_in(shape.height)
+        s_width = _emu_to_in(shape.width)
+    except Exception:
+        return False
+    # bbox が完全に底辺 0.6" 以内に収まるか
+    if s_top < slide_height - 0.6:
+        return False
+
+    # 代表フォント pt
+    max_pt: Optional[float] = None
+    for para in text_frame.paragraphs:
+        pt = _effective_paragraph_size(para, default_pt=min_readable_pt)
+        if max_pt is None or pt > max_pt:
+            max_pt = pt
+    if max_pt is None:
+        max_pt = min_readable_pt
+    if max_pt < min_readable_pt - 1:
+        return False
+
+    # 行数 (段落ごとに折返し推定)
+    usable_width = max(0.1, s_width - 0.10)
+    total_lines = 0
+    for para in text_frame.paragraphs:
+        text = _paragraph_text(para)
+        if not text:
+            total_lines += 1
+            continue
+        pt = _effective_paragraph_size(para, default_pt=max_pt)
+        # estimate_text_height は pt × 0.0139 × 1.2 × n_lines 相当
+        line_h = max(pt * 0.0139 * 1.2, 0.01)
+        h = estimate_text_height(text, usable_width, pt)
+        n_lines = max(1, int(round(h / line_h)))
+        total_lines += n_lines
+        if total_lines > 3:
+            return False
+    if total_lines > 3:
+        return False
+    return True
+
+
 def check_unreadable_text(
     presentation: Presentation,
     *,
     min_readable_pt: float = 8.0,
+    whitelist_names: Optional[List[str]] = None,
 ) -> List[ValidationFinding]:
     """``min_readable_pt`` 未満の font サイズを警告する.
 
-    shape 名に ``footer`` / ``page_number`` / ``source`` / ``footnote`` を
-    含む shape は (大文字小文字を区別せず) 除外する。
+    以下のいずれかに該当する shape は検査対象から除外する:
+
+    1. ``whitelist_names`` (呼び出し側が明示した部分一致リスト) に shape 名が
+       部分一致する (大文字小文字を区別しない)。日本語名のフッタ等にも対応する。
+    2. フッタゾーン ヒューリスティック (``_is_footer_zone_shape``) に合致する
+       (底辺 0.6" 以内に収まり、行数 ≤ 3、フォントが ``min_readable_pt - 1`` 以上)。
+    3. shape 名に ``footer`` / ``page_number`` / ``source`` / ``footnote`` を
+       含む (英語既定の正規表現フォールバック、後方互換)。
     """
     findings: List[ValidationFinding] = []
+    slide_height_in = _emu_to_in(presentation.slide_height)
 
     for slide_index, slide in enumerate(presentation.slides):
         for shape_i, shape in enumerate(slide.shapes):
@@ -459,10 +543,18 @@ def check_unreadable_text(
             if not shape.has_text_frame:
                 continue
             name = _shape_name(shape, f"Shape {shape_i}")
+            # 1. 明示 whitelist (substring, case-insensitive)
+            if _matches_whitelist_names(name, whitelist_names):
+                continue
+            # 3. 既存英語正規表現フォールバック
             if _UNREADABLE_WHITELIST_RE.search(name or ""):
                 continue
 
             tf = shape.text_frame
+
+            # 2. フッタゾーン ヒューリスティック
+            if _is_footer_zone_shape(shape, tf, slide_height_in, min_readable_pt):
+                continue
             smallest: Optional[float] = None
             # run に明示された size を優先、無い場合は段落の実効サイズを見る
             for para in tf.paragraphs:
@@ -505,14 +597,56 @@ def check_unreadable_text(
     return findings
 
 
+def _get_vertical_anchor(text_frame) -> Any:
+    """text_frame の ``vertical_anchor`` を安全に取得する.
+
+    未設定または例外時は ``None`` を返す (呼び出し側で TOP 相当に扱う)。
+    """
+    try:
+        return text_frame.vertical_anchor
+    except Exception:
+        return None
+
+
+def _projected_text_range(
+    shape, text_frame, needed_height: float
+) -> Tuple[float, float]:
+    """text_frame の vertical_anchor に基づいた実描画垂直範囲 (top, bottom) を返す.
+
+    - ``TOP`` (または未設定/None): ``[s_top, s_top + needed_height]``
+    - ``BOTTOM``: ``[s_bottom - needed_height, s_bottom]``
+    - ``MIDDLE``: ``[s_center - needed_height/2, s_center + needed_height/2]``
+
+    戻り値は inches の (top, bottom) タプル。
+    """
+    s_top = _emu_to_in(shape.top)
+    s_height = _emu_to_in(shape.height)
+    s_bottom = s_top + s_height
+    s_center = s_top + s_height / 2.0
+
+    anchor = _get_vertical_anchor(text_frame)
+    if anchor == MSO_ANCHOR.BOTTOM:
+        return (s_bottom - needed_height, s_bottom)
+    if anchor == MSO_ANCHOR.MIDDLE:
+        half = needed_height / 2.0
+        return (s_center - half, s_center + half)
+    # TOP / None / unset → TOP 相当
+    return (s_top, s_top + needed_height)
+
+
 def check_divider_collision(
     presentation: Presentation,
 ) -> List[ValidationFinding]:
     """タイトル直下の divider line にタイトルテキストが食い込まないかを検証する.
 
     divider 条件: 高さ < 0.05" かつ 幅 > 2"。
-    その上 0.5" 以内に存在する text frame について、推定高さが
-    ``divider.top - 0.02"`` を越えたら ``error`` finding。
+    その上 0.5" 以内に存在する text frame について、vertical_anchor を考慮した
+    投影範囲 (``_projected_text_range``) が divider 帯と交差したら
+    ``error`` finding を返す。
+
+    bottom-anchor の場合 (McKinsey 風タイトル: y=0.45..0.95 を anchor=bottom で
+    テキストが上方向に伸びる) は、``s_bottom <= divider_top`` の限り
+    collision とみなさない。
     """
     findings: List[ValidationFinding] = []
 
@@ -555,10 +689,33 @@ def check_divider_collision(
                 needed_height, font_size = _estimate_frame_needed_height(
                     tf, frame_width
                 )
-                projected_bottom = s_top + needed_height
+                proj_top, proj_bottom = _projected_text_range(
+                    shape, tf, needed_height
+                )
                 limit = d_top - 0.02
 
-                if projected_bottom > limit:
+                # divider 帯との交差判定 (projected range が divider 上端を
+                # 越えて食い込むか)。divider 自体の厚みは 0.05" 未満なので
+                # ``limit`` (= d_top - 0.02) を越えたら error とする。
+                anchor = _get_vertical_anchor(tf)
+                collides = False
+                if anchor == MSO_ANCHOR.BOTTOM:
+                    # bottom-anchor: テキストは上方向に伸びる。
+                    # s_bottom (= proj_bottom) が divider top を越えて、
+                    # かつ proj_top が divider top より上にあるときのみ衝突。
+                    # s_bottom <= d_top の場合は絶対に衝突しない。
+                    if proj_bottom > d_top and proj_top < d_top:
+                        collides = True
+                elif anchor == MSO_ANCHOR.MIDDLE:
+                    # center 基準の投影範囲が divider 上端を跨ぐ場合に衝突
+                    if proj_bottom > limit:
+                        collides = True
+                else:
+                    # TOP (既定): 従来どおり bottom が limit を越えたら衝突
+                    if proj_bottom > limit:
+                        collides = True
+
+                if collides:
                     name = _shape_name(shape, f"Shape {shape_i}")
                     div_name = _shape_name(div_shape, "Divider")
                     findings.append(
@@ -568,7 +725,7 @@ def check_divider_collision(
                             shape_name=name,
                             category="divider_collision",
                             message=(
-                                f"text extends to {projected_bottom:.2f}\" "
+                                f"text extends to {proj_bottom:.2f}\" "
                                 f"overlapping divider '{div_name}' at "
                                 f"{d_top:.2f}\" (limit {limit:.2f}\")"
                             ),
@@ -726,6 +883,7 @@ def check_deck_extended(
     overflow_tolerance_pct: float = 5.0,
     axis_tolerance: float = 0.1,
     gap_tolerance: float = 0.05,
+    whitelist_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """deck 全体を走査し、既存 + 拡張チェックをまとめて返す.
 
@@ -777,6 +935,7 @@ def check_deck_extended(
     unreadable = check_unreadable_text(
         presentation,
         min_readable_pt=min_readable_pt,
+        whitelist_names=whitelist_names,
     )
     divider = check_divider_collision(presentation)
     gaps = check_inconsistent_gaps(
