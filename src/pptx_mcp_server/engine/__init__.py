@@ -1,3 +1,7 @@
+from .layout_constants import (
+    TEXTBOX_INNER_PADDING_PER_SIDE,
+    TEXTBOX_INNER_PADDING_TOTAL,
+)
 from .pptx_io import open_pptx, save_pptx, create_presentation, EngineError, ErrorCode
 from .slides import (
     get_presentation_info,
@@ -104,6 +108,8 @@ from .cards import (
 )
 
 __all__ = [
+    # Layout constants
+    "TEXTBOX_INNER_PADDING_PER_SIDE", "TEXTBOX_INNER_PADDING_TOTAL",
     # I/O
     "open_pptx", "save_pptx", "create_presentation",
     "EngineError", "ErrorCode",
