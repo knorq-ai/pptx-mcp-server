@@ -2,6 +2,85 @@
 
 All notable changes to `pptx-mcp-server` are documented in this file.
 
+## v0.3.1 — close OpenAI/Codex 5.4 remaining blockers
+
+Flagged by the OpenAI/Codex 5.4 v0.3.0 review as the remaining partials that
+prevent LOGO-READY. Closes #105, #106, #107, #108.
+
+### Fixes
+
+#### #105 — Strict nested-key validation + legacy string-JSON fallback removal
+
+The v0.3.0 surface change (#97) converted `*_json: str` parameters to
+structured types but left several dict-shaped specs without unknown-key
+rejection. Adversarial input like `_validate_chart_data('column', ['A'],
+['oops'])` surfaced as `AttributeError` → `INTERNAL_ERROR` rather than a
+structured `INVALID_PARAMETER`.
+
+v0.3.1 adds `frozenset`-backed allowed-keys validation for every
+remaining dict-shaped spec:
+
+- `pptx_add_chart` → `_validate_chart_spec` + per-series key validation
+- `pptx_build_slide` / `pptx_build_deck` → `_validate_slide_spec`
+- `pptx_add_kpi_row` → `_validate_kpi_spec`
+- `pptx_edit_table_cells` → `_validate_edit_cells_spec`
+
+Unknown keys raise `EngineError(INVALID_PARAMETER, "<spec>: unknown keys
+[...]; allowed: [...]")`. Wrong types on critical fields (e.g. `series`
+not a list, `row` not int, `value` not str/number) are rejected cleanly
+without leaking `AttributeError` / `TypeError`.
+
+**BREAKING — engine layer only** (MCP layer unaffected): the legacy
+`isinstance(x, str)` → `json.loads` fallbacks in `build_slide`,
+`build_deck`, `add_kpi_row`, `add_bullet_block` engine wrappers were
+removed. Library consumers must now pass structured values. The MCP
+boundary already passed dicts since v0.3.0, so MCP clients are unaffected.
+
+#### #106 — `message` field in detailed layout result
+
+`pptx_check_layout(detailed=True)` now includes a human-readable
+`result["message"]` alongside `slides` / `summary`, so generic agents
+that read `result.message` work for every tool:
+
+```json
+{"ok": true, "result": {
+    "message": "Found 3 errors, 0 warnings, 12 info findings across 22 slides",
+    "slides": [...],
+    "summary": {...}
+}}
+```
+
+#### #107 — `FILE_NOT_FOUND` taxonomy fix for `pptx_check_layout`
+
+`pptx_check_layout` called `Presentation(file_path)` directly, so a
+missing file surfaced as `INTERNAL_ERROR: PackageNotFoundError`. It now
+routes through `engine.pptx_io.open_pptx`, which maps missing files to
+`EngineError(FILE_NOT_FOUND)` — consistent with every other tool.
+
+Audit confirmed no other direct `Presentation(path)` calls remain in
+`server.py`.
+
+#### #108 — Drift cleanup
+
+- Dropped the stale `"All 25 tools"` assertion in `tests/test_server.py`
+  (actual count is 37+). The test now asserts the core tools are
+  registered without pinning a hardcoded total.
+- CHANGELOG already recorded `INSTRUCTIONS` at 50 lines (accurate — the
+  v0.3.0 claim was never 41, contrary to some review drafts); no further
+  line-count edit needed.
+
+### Tests
+
+Coverage extended for each new validator path:
+
+- Chart / slide / KPI / edit-cell unknown-key rejection.
+- `build_slide(prs, '{"title":"x"}')` string input now raises
+  `EngineError(INVALID_PARAMETER)` — the legacy silent-parse is gone.
+- `pptx_check_layout("/nonexistent.pptx")` and
+  `pptx_check_layout("/nonexistent.pptx", detailed=True)` both return
+  `error.code == "FILE_NOT_FOUND"`.
+- `pptx_check_layout(path, detailed=True)` result contains `message`.
+
 ## v0.3.0 — BREAKING: structured MCP surface
 
 Flagged by OpenAI/Codex 5.4 as the remaining blockers to LOGO-READY status;

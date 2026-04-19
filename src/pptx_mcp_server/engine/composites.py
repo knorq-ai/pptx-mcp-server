@@ -23,6 +23,127 @@ from .connectors import _add_connector, _add_callout
 from ..theme import Theme, MCKINSEY, get_theme, resolve_color
 
 
+# ── Strict-key validation (#105) ───────────────────────────────
+#
+# v0.3.1 では chart / slide / deck / kpi / edit-cell の各 spec に対して
+# unknown キーを明示的に拒否する。flex.py / cards.py と同一のパターンを
+# 踏襲し, 型崩れは AttributeError や TypeError ではなく
+# EngineError(INVALID_PARAMETER) として surface する。
+
+_SLIDE_SPEC_ALLOWED = frozenset({
+    "layout",
+    "title",
+    "subtitle",
+    "background",
+    "source",
+    "page_number",
+    "theme",
+    "elements",
+})
+
+_KPI_ALLOWED = frozenset({"value", "label"})
+
+_EDIT_CELL_ALLOWED = frozenset({
+    "row", "col",
+    "text",
+    "font_size",
+    "font_color",
+    "bold",
+    "bg_color",
+})
+
+
+def _validate_slide_spec(spec: dict) -> None:
+    """build_slide / build_deck の 1 スライド分 spec を検証する。"""
+    if not isinstance(spec, dict):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"slide spec must be a dict, got {type(spec).__name__}",
+        )
+    unknown = set(spec.keys()) - _SLIDE_SPEC_ALLOWED
+    if unknown:
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"slide: unknown keys {sorted(unknown)}; "
+            f"allowed: {sorted(_SLIDE_SPEC_ALLOWED)}",
+        )
+    elements = spec.get("elements", [])
+    if not isinstance(elements, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"slide.elements must be a list, got {type(elements).__name__}",
+        )
+    for i, elem in enumerate(elements):
+        if not isinstance(elem, dict):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"slide.elements[{i}] must be a dict, got {type(elem).__name__}",
+            )
+
+
+def _validate_kpi_spec(kpis: list) -> None:
+    """_add_kpi_row 用の kpi list を検証する。"""
+    if not isinstance(kpis, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"kpis must be a list, got {type(kpis).__name__}",
+        )
+    for i, kpi in enumerate(kpis):
+        if not isinstance(kpi, dict):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"kpis[{i}] must be a dict, got {type(kpi).__name__}",
+            )
+        unknown = set(kpi.keys()) - _KPI_ALLOWED
+        if unknown:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"kpis[{i}]: unknown keys {sorted(unknown)}; "
+                f"allowed: {sorted(_KPI_ALLOWED)}",
+            )
+        value = kpi.get("value")
+        if value is not None and not isinstance(value, (str, int, float)):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"kpis[{i}].value must be str or number, "
+                f"got {type(value).__name__}",
+            )
+
+
+def _validate_edit_cells_spec(edits: list) -> None:
+    """_edit_table_cells 用の edits list を検証する。"""
+    if not isinstance(edits, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"edits must be a list, got {type(edits).__name__}",
+        )
+    for i, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"edits[{i}] must be a dict, got {type(edit).__name__}",
+            )
+        unknown = set(edit.keys()) - _EDIT_CELL_ALLOWED
+        if unknown:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"edits[{i}]: unknown keys {sorted(unknown)}; "
+                f"allowed: {sorted(_EDIT_CELL_ALLOWED)}",
+            )
+        row = edit.get("row")
+        col = edit.get("col")
+        if row is not None and not isinstance(row, int):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"edits[{i}].row must be int, got {type(row).__name__}",
+            )
+        if col is not None and not isinstance(col, int):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"edits[{i}].col must be int, got {type(col).__name__}",
+            )
+
+
 # ── In-memory composite primitives ─────────────────────────────
 
 
@@ -239,6 +360,7 @@ def _add_kpi_row(slide, kpis, y, theme=None):
     Design: white card with left accent bar, large value, label below.
     kpis = [{"value": "107.8M", "label": "Revenue"}, ...]
     Returns list of shape indices."""
+    _validate_kpi_spec(kpis)
     if theme:
         left_margin = theme.margins.get("left", 0.9)
         right_margin = theme.margins.get("right", 0.9)
@@ -606,6 +728,8 @@ def _build_slide(prs, spec, theme=None):
 
     Returns (slide, slide_index).
     """
+    _validate_slide_spec(spec)
+
     # Theme resolution: explicit param > spec key > MCKINSEY default
     if theme is None:
         theme_name = spec.get("theme")
@@ -739,6 +863,12 @@ def _dispatch_element(slide, elem, etype, theme):
         )
 
     elif etype == "chart":
+        # strict-key validation for the embedded chart spec (#105)
+        from .charts import _validate_chart_spec as _vcs
+        # elem inherits slide-element shape — strip 'type' key before
+        # validating as chart spec.
+        chart_only = {k: v for k, v in elem.items() if k != "type"}
+        _vcs(chart_only)
         _add_chart(
             slide,
             chart_type=elem.get("chart_type", "column"),
@@ -837,11 +967,16 @@ def _dispatch_element(slide, elem, etype, theme):
             )
 
 
-def build_slide(file_path, spec_json):
-    """File-based wrapper: build an entire slide from a JSON spec.
-    One file open, one save. Returns slide index and element count."""
-    import json
-    spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+def build_slide(file_path, spec):
+    """File-based wrapper: build an entire slide from a spec dict.
+
+    One file open, one save. Returns slide index and element count.
+
+    v0.3.1 (#105): the legacy ``spec_json: str`` fallback was removed.
+    Library consumers must now pass a structured ``dict`` — same contract as
+    the MCP boundary. Passing a string raises ``EngineError(INVALID_PARAMETER)``
+    (caught by ``_validate_slide_spec``).
+    """
     prs = open_pptx(file_path)
     slide, idx = _build_slide(prs, spec)
     save_pptx(prs, file_path)
@@ -853,11 +988,19 @@ def build_slide(file_path, spec_json):
     return f"Built slide [{idx}] with {n_elements} elements: {title}{warning}"
 
 
-def build_deck(file_path, slides_json):
+def build_deck(file_path, slides):
     """File-based wrapper: build an entire deck from a list of slide specs.
-    Single file open/save for the whole deck."""
-    import json
-    slides = json.loads(slides_json) if isinstance(slides_json, str) else slides_json
+
+    Single file open/save for the whole deck.
+
+    v0.3.1 (#105): the legacy ``slides_json: str`` fallback was removed —
+    see :func:`build_slide` for details.
+    """
+    if not isinstance(slides, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"slides must be a list, got {type(slides).__name__}",
+        )
     prs = open_pptx(file_path)
     results = []
     for i, spec in enumerate(slides):
@@ -889,10 +1032,11 @@ def add_section_divider(file_path, title, subtitle=""):
     return f"Added section divider [{idx}] with title: {title}"
 
 
-def add_kpi_row(file_path, slide_index, kpis_json, y):
-    """File-based wrapper: add a row of KPI callout boxes."""
-    import json
-    kpis = json.loads(kpis_json) if isinstance(kpis_json, str) else kpis_json
+def add_kpi_row(file_path, slide_index, kpis, y):
+    """File-based wrapper: add a row of KPI callout boxes.
+
+    v0.3.1 (#105): the legacy ``kpis_json: str`` fallback was removed.
+    """
     prs = open_pptx(file_path)
     slide = _get_slide(prs, slide_index)
     indices = _add_kpi_row(slide, kpis, y)
@@ -900,10 +1044,17 @@ def add_kpi_row(file_path, slide_index, kpis_json, y):
     return f"Added {len(kpis)} KPI boxes on slide [{slide_index}]"
 
 
-def add_bullet_block(file_path, slide_index, items_json, left, top, width, height):
-    """File-based wrapper: add a bulleted text block."""
-    import json
-    items = json.loads(items_json) if isinstance(items_json, str) else items_json
+def add_bullet_block(file_path, slide_index, items, left, top, width, height):
+    """File-based wrapper: add a bulleted text block.
+
+    v0.3.1 (#105): the legacy ``items_json: str`` fallback was removed —
+    pass ``items: list[str]`` directly.
+    """
+    if not isinstance(items, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"items must be a list, got {type(items).__name__}",
+        )
     prs = open_pptx(file_path)
     slide = _get_slide(prs, slide_index)
     idx = _add_bullet_block(slide, items, left, top, width, height)

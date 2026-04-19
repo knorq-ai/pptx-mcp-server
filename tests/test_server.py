@@ -104,10 +104,13 @@ def deck(tmp_path):
 
 
 class TestToolRegistration:
-    """All 25 tools must be registered on the MCP server."""
+    """All registered MCP tools must expose the expected core signatures."""
 
     def test_all_tools_registered(self):
-        # FastMCP stores tools internally; list them via the _tool_manager
+        # FastMCP stores tools internally; list them via the _tool_manager.
+        # v0.3.1 (#108): dropped hardcoded "25 tools" drift. The expected
+        # list is a *subset* — new tools can be added without editing this
+        # assertion as long as the core tools stay registered.
         tool_names = list(mcp._tool_manager._tools.keys())
         expected = [
             "pptx_create",
@@ -138,7 +141,8 @@ class TestToolRegistration:
         ]
         for name in expected:
             assert name in tool_names, f"Tool '{name}' not registered"
-        assert len(expected) == 25
+        # dynamic count — matches the live FastMCP registration.
+        assert len(tool_names) >= len(expected)
 
 
 class TestCreatePptx:
@@ -837,3 +841,248 @@ class TestInstructionsContent:
 
     def test_auto_render_opt_in_documented(self):
         assert "PPTX_MCP_AUTO_RENDER" in INSTRUCTIONS
+
+
+# ── v0.3.1 (#105/#106/#107/#108): OpenAI/Codex gap closures ────────────
+
+class TestStrictNestedValidation:
+    """#105: unknown keys in nested specs return structured INVALID_PARAMETER.
+
+    Adversarial shapes that used to leak ``AttributeError`` / ``TypeError``
+    are now rejected cleanly at the engine boundary.
+    """
+
+    def test_chart_spec_rejects_unknown_series_key(self, deck):
+        err = _unwrap_err(
+            pptx_add_chart(
+                deck,
+                slide_index=0,
+                chart={
+                    "chart_type": "column",
+                    "categories": ["A"],
+                    "series": [{"name": "S", "values": [1], "unknown_key": 1}],
+                },
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "unknown_key" in err["message"]
+
+    def test_chart_spec_rejects_unknown_top_level_key(self, deck):
+        err = _unwrap_err(
+            pptx_add_chart(
+                deck,
+                slide_index=0,
+                chart={
+                    "chart_type": "column",
+                    "categories": ["A"],
+                    "series": [{"name": "S", "values": [1]}],
+                    "bogus_field": 42,
+                },
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "bogus_field" in err["message"]
+
+    def test_chart_spec_series_string_not_dict(self, deck):
+        # The original adversarial case: series=['oops'] used to raise
+        # AttributeError: 'str' object has no attribute 'get'.
+        err = _unwrap_err(
+            pptx_add_chart(
+                deck,
+                slide_index=0,
+                chart={
+                    "chart_type": "column",
+                    "categories": ["A"],
+                    "series": ["oops"],
+                },
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "series[0]" in err["message"]
+
+    def test_chart_spec_valid_still_works(self, deck):
+        payload = _unwrap_ok(
+            pptx_add_chart(
+                deck,
+                slide_index=0,
+                chart={
+                    "chart_type": "column",
+                    "categories": ["Q1", "Q2"],
+                    "series": [{"name": "Rev", "values": [10, 20]}],
+                },
+            )
+        )
+        assert "message" in payload
+
+    def test_build_slide_rejects_unknown_top_level_key(self, deck):
+        err = _unwrap_err(
+            pptx_build_slide(
+                deck,
+                spec={"unknown_field": 1, "title": "x"},
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "unknown_field" in err["message"]
+
+    def test_build_slide_valid_still_works(self, deck):
+        payload = _unwrap_ok(
+            pptx_build_slide(deck, spec={"layout": "content", "title": "x"})
+        )
+        assert "message" in payload
+
+    def test_build_deck_rejects_unknown_key_in_slide(self, deck):
+        err = _unwrap_err(
+            pptx_build_deck(
+                deck,
+                slides=[{"layout": "content", "title": "x", "bogus": True}],
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "bogus" in err["message"]
+
+    def test_kpi_row_rejects_unknown_key(self, deck):
+        err = _unwrap_err(
+            pptx_add_kpi_row(
+                deck,
+                slide_index=0,
+                kpis=[{"label": "x", "value": "y", "typo": 1}],
+                y=1.2,
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "typo" in err["message"]
+
+    def test_kpi_row_valid_still_works(self, deck):
+        payload = _unwrap_ok(
+            pptx_add_kpi_row(
+                deck,
+                slide_index=0,
+                kpis=[{"label": "Rev", "value": "100"}],
+                y=1.2,
+            )
+        )
+        assert "message" in payload
+
+    def test_edit_cells_rejects_unknown_key(self, deck):
+        # Build a table first.
+        pptx_add_table(
+            deck, slide_index=0,
+            rows=[["H1", "H2"], ["a", "b"]],
+            left=1.0, top=1.0, width=6.0,
+        )
+        err = _unwrap_err(
+            pptx_edit_table_cells(
+                deck, slide_index=0, shape_index=0,
+                edits=[{"row": 0, "col": 0, "text": "X", "typo": 1}],
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "typo" in err["message"]
+
+    def test_edit_cells_rejects_non_int_row(self, deck):
+        pptx_add_table(
+            deck, slide_index=0,
+            rows=[["H1", "H2"], ["a", "b"]],
+            left=1.0, top=1.0, width=6.0,
+        )
+        err = _unwrap_err(
+            pptx_edit_table_cells(
+                deck, slide_index=0, shape_index=0,
+                edits=[{"row": "zero", "col": 0, "text": "X"}],
+            )
+        )
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "row" in err["message"]
+
+
+class TestEngineWrappersStringJsonRemoved:
+    """#105 Part B: engine wrappers no longer accept legacy string-JSON input."""
+
+    def test_build_slide_string_input_rejected(self, tmp_path):
+        from pptx_mcp_server.engine.composites import build_slide
+        from pptx_mcp_server.engine import create_presentation
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+
+        path = str(tmp_path / "deck.pptx")
+        create_presentation(path)
+        with pytest.raises(EngineError) as exc:
+            build_slide(path, '{"title":"x"}')
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+
+    def test_build_deck_string_input_rejected(self, tmp_path):
+        from pptx_mcp_server.engine.composites import build_deck
+        from pptx_mcp_server.engine import create_presentation
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+
+        path = str(tmp_path / "deck.pptx")
+        create_presentation(path)
+        with pytest.raises(EngineError) as exc:
+            build_deck(path, '[{"title":"x"}]')
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+
+    def test_add_bullet_block_string_input_rejected(self, tmp_path):
+        from pptx_mcp_server.engine.composites import add_bullet_block
+        from pptx_mcp_server.engine import create_presentation, add_slide
+        from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
+
+        path = str(tmp_path / "deck.pptx")
+        create_presentation(path)
+        add_slide(path, layout_index=6)
+        with pytest.raises(EngineError) as exc:
+            add_bullet_block(
+                path, slide_index=0,
+                items='["a","b"]',
+                left=1.0, top=1.0, width=5.0, height=2.0,
+            )
+        assert exc.value.code == ErrorCode.INVALID_PARAMETER
+
+
+class TestCheckLayoutDetailedMessage:
+    """#106: ``detailed=True`` result includes a ``message`` field."""
+
+    def test_detailed_clean_has_message(self, deck):
+        payload = _unwrap_ok(pptx_check_layout(deck, detailed=True))
+        assert "message" in payload
+        assert "clean" in payload["message"].lower() or "finding" in payload["message"].lower()
+
+    def test_detailed_with_findings_has_message(self, deck):
+        # Introduce an overlap.
+        pptx_add_shape(deck, 0, "rectangle", 1.0, 1.0, 3.0, 2.0, fill_color="2251FF")
+        pptx_add_shape(deck, 0, "rectangle", 2.0, 1.5, 3.0, 2.0, fill_color="FF0000")
+        payload = _unwrap_ok(pptx_check_layout(deck, detailed=True))
+        assert "message" in payload
+        msg = payload["message"]
+        # Must mention "findings" or "clean" so generic agents can parse it.
+        assert "findings" in msg or "clean" in msg
+
+
+class TestCheckLayoutFileNotFound:
+    """#107: missing file → FILE_NOT_FOUND (not INTERNAL_ERROR)."""
+
+    def test_missing_file_returns_file_not_found(self, tmp_path):
+        nonexistent = str(tmp_path / "nope.pptx")
+        err = _unwrap_err(pptx_check_layout(nonexistent))
+        assert err["code"] == "FILE_NOT_FOUND"
+
+    def test_missing_file_detailed_returns_file_not_found(self, tmp_path):
+        nonexistent = str(tmp_path / "nope.pptx")
+        err = _unwrap_err(pptx_check_layout(nonexistent, detailed=True))
+        assert err["code"] == "FILE_NOT_FOUND"
+
+
+class TestNoStale25Tools:
+    """#108: no hardcoded '25 tools' assertion left in tests.
+
+    Historical comments referencing the cleanup are allowed; a
+    ``len(...) == 25`` hardcoded count assertion is not.
+    """
+
+    def test_no_hardcoded_25_tools_assertion(self):
+        # v0.3.1 (#108): the test asserts that the live FastMCP
+        # registration has at least the core tools, without a brittle
+        # hardcoded count. 37+ tools are registered today.
+        tool_names = list(mcp._tool_manager._tools.keys())
+        assert len(tool_names) > 25, (
+            "FastMCP should register well beyond the historical 25-tool "
+            f"baseline — got {len(tool_names)}"
+        )

@@ -179,6 +179,10 @@ def _edit_table_cells(
     theme=None,
 ):
     """In-memory: batch edit multiple table cells."""
+    # strict-key validation is injected lazily to avoid import cycles.
+    from .composites import _validate_edit_cells_spec
+    _validate_edit_cells_spec(edits)
+
     shape = _get_shape(slide, shape_index)
 
     if not shape.has_table:

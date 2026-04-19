@@ -1202,16 +1202,31 @@ def pptx_check_layout(
 
     Run after building a deck to catch layout issues before delivery."""
     try:
-        from pptx import Presentation
-        prs = Presentation(file_path)
+        # v0.3.1 (#107): route through ``open_pptx`` so missing files emit
+        # ``FILE_NOT_FOUND`` (consistent with every other tool) instead of
+        # the stray ``PackageNotFoundError`` → ``INTERNAL_ERROR``.
+        prs = open_pptx(file_path)
         result = check_deck_extended(
             prs,
             min_readable_pt=min_readable_pt,
             overflow_tolerance_pct=overflow_tolerance_pct,
         )
         if detailed:
-            # #99: pass the dict directly — single json.loads decodes the envelope.
-            return _success(result)
+            # v0.3.1 (#106): include a ``message`` field so generic
+            # ``result.message`` consumers work for every tool.
+            summary = result.get("summary", {})
+            n_slides = len(result.get("slides", []))
+            errors = summary.get("errors", 0)
+            warnings = summary.get("warnings", 0)
+            infos = summary.get("infos", 0)
+            if errors == 0 and warnings == 0:
+                message = f"All {n_slides} slides clean — 0 findings"
+            else:
+                message = (
+                    f"Found {errors} errors, {warnings} warnings, "
+                    f"{infos} info findings across {n_slides} slides"
+                )
+            return _success({"message": message, **result})
         return _success({"message": _format_check_layout_summary(result)})
     except Exception as e:
         return _err(e)

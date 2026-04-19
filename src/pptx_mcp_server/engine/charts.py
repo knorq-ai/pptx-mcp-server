@@ -66,7 +66,79 @@ _LEGEND_POSITION_MAP = {
 }
 
 # ---------------------------------------------------------------------------
-# Validation
+# Spec validation (strict-key)
+# ---------------------------------------------------------------------------
+
+# add_chart() spec 全体で許容するトップレベルキー。v0.3.1 で unknown キーを
+# 厳格に拒否するようにした (#105)。
+_CHART_SPEC_ALLOWED = frozenset({
+    "chart_type",
+    "left", "top", "width", "height",
+    "categories", "series",
+    "title",
+    "legend_position", "legend_font_size",
+    "data_labels_show", "data_labels_position", "data_labels_number_format",
+    "data_labels_font_size", "data_labels_font_color",
+    "axis_value_title", "axis_value_min", "axis_value_max",
+    "axis_value_major_unit", "axis_value_gridlines",
+    "axis_value_number_format", "axis_value_visible",
+    "axis_category_visible",
+    "gap_width", "overlap",
+    "theme",
+})
+
+# 各 series 要素で許容するキー。
+_CHART_SERIES_ALLOWED = frozenset({"name", "values", "color"})
+
+
+def _validate_chart_spec(chart: dict) -> None:
+    """chart_spec を受け取り unknown キーや型崩れを早期に弾く。
+
+    Raises ``EngineError(INVALID_PARAMETER)`` on shape problems.
+    """
+    if not isinstance(chart, dict):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"chart spec must be a dict, got {type(chart).__name__}",
+        )
+    unknown = set(chart.keys()) - _CHART_SPEC_ALLOWED
+    if unknown:
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"chart: unknown keys {sorted(unknown)}; "
+            f"allowed: {sorted(_CHART_SPEC_ALLOWED)}",
+        )
+
+    categories = chart.get("categories", [])
+    if not isinstance(categories, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"chart.categories must be a list, got {type(categories).__name__}",
+        )
+
+    series = chart.get("series", [])
+    if not isinstance(series, list):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"chart.series must be a list, got {type(series).__name__}",
+        )
+    for i, s in enumerate(series):
+        if not isinstance(s, dict):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"chart.series[{i}] must be a dict, got {type(s).__name__}",
+            )
+        unknown_s = set(s.keys()) - _CHART_SERIES_ALLOWED
+        if unknown_s:
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"chart.series[{i}]: unknown keys {sorted(unknown_s)}; "
+                f"allowed: {sorted(_CHART_SERIES_ALLOWED)}",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Data validation
 # ---------------------------------------------------------------------------
 
 
@@ -103,6 +175,11 @@ def _validate_chart_data(
 
     n_cats = len(categories)
     for i, s in enumerate(series):
+        if not isinstance(s, dict):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"chart.series[{i}] must be a dict, got {type(s).__name__}",
+            )
         name = s.get("name", f"Series {i}")
 
         # values presence
@@ -421,6 +498,8 @@ def add_chart(file_path: str, slide_index: int, chart_spec: dict) -> str:
     Returns a summary string.
     """
     from ..theme import get_theme
+
+    _validate_chart_spec(chart_spec)
 
     prs = open_pptx(file_path)
     slide = _get_slide(prs, slide_index)
