@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0.0"]
+test = ["pytest>=7"]
 
 [project.urls]
 Homepage = "https://github.com/knorq/pptx-mcp-server"
