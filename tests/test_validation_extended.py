@@ -873,6 +873,22 @@ class TestOverlapMinAreaFilter:
         msgs = [w for w in warnings if "OVERLAP" in w]
         assert not msgs, f"Container overlap should be skipped; got: {warnings}"
 
+    def test_float_precision_containment_is_tolerated(self) -> None:
+        """EMU→inches 変換の float drift で b_bottom が a_bottom を 3e-16 超える
+        ケースでも _is_container は True を返す。
+
+        本番で slide に Inches(1.35) + Inches(0.95) と Inches(2.1) + Inches(0.2)
+        が両方 2.3" 扱いになるはずが、演算順で片方だけ 2.3000000000000003 に
+        drift し、厳密 `>=` では containment が false になっていた (#77 follow-up)。
+        """
+        from pptx_mcp_server.engine.validation import _is_container
+        # Rectangle contains TextBox but with a 3e-16 drift on bottom edge.
+        rect = (9.45, 1.35, 12.15, 2.3)
+        textbox = (9.6, 2.1, 12.0, 2.3000000000000003)
+        assert _is_container(rect, textbox), (
+            "Float-precision drift of 3e-16 should not break containment check"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Issue #80: check_title_wrap
