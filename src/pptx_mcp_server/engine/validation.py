@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import statistics
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pptx import Presentation
 from pptx.enum.text import MSO_ANCHOR
@@ -20,6 +20,7 @@ from .layout_constants import (
     TEXTBOX_INNER_PADDING_PER_SIDE,
     TEXTBOX_INNER_PADDING_TOTAL,
 )
+from .pptx_io import EngineError, ErrorCode
 from .text_metrics import estimate_text_height, estimate_text_width, wrap_text
 
 # ---------------------------------------------------------------------------
@@ -416,11 +417,245 @@ def _estimate_frame_needed_height(
     return total, max_pt
 
 
+def _run_font_name(run, paragraph) -> Optional[str]:
+    """run の font.name を解決する。paragraph / defRPr への軽いフォールバックを伴う.
+
+    OOXML の継承チェーンを完全には再現しないが、ユーザが明示した
+    font name を検出するには十分である (master/layout テーマ継承までは
+    踏み込まない)。
+    """
+    try:
+        if run.font.name:
+            return str(run.font.name)
+    except Exception:
+        pass
+    try:
+        if paragraph.font.name:
+            return str(paragraph.font.name)
+    except Exception:
+        pass
+    return None
+
+
+def _real_wrap_lines(
+    font_path: str,
+    text: str,
+    max_width_inches: float,
+    size_pt: float,
+) -> int:
+    """実フォントの advance width でテキストを折り返した行数を返す.
+
+    ``text_metrics.wrap_text`` と同じトークン分割を用いるが、幅は
+    ``font_metrics.text_width_inches`` で実測する。行分割境界の完全一致
+    は求めず、行数推定でヒューリスティックと独立な数値を得るのが目的。
+
+    明示改行 ``\n`` は強制改行として扱い、空行も 1 行とカウントする。
+    """
+    from . import font_metrics  # 遅延 import: fontTools 未インストール時も本体はロード可
+
+    if not text:
+        return 0
+    total_lines = 0
+    segments = text.split("\n")
+    for seg in segments:
+        if seg == "":
+            total_lines += 1
+            continue
+        # text_metrics._tokenize を mirror する簡易トークナイザ
+        from .text_metrics import is_cjk
+
+        tokens: List[str] = []
+        buf = ""
+        for ch in seg:
+            if ch == " ":
+                if buf:
+                    tokens.append(buf)
+                    buf = ""
+                tokens.append(" ")
+            elif is_cjk(ch):
+                if buf:
+                    tokens.append(buf)
+                    buf = ""
+                tokens.append(ch)
+            else:
+                buf += ch
+        if buf:
+            tokens.append(buf)
+
+        current = ""
+        current_w = 0.0
+        lines = 0
+
+        def flush():
+            nonlocal current, current_w, lines
+            lines += 1
+            current = ""
+            current_w = 0.0
+
+        for tok in tokens:
+            tok_w = font_metrics.text_width_inches(font_path, tok, size_pt)
+            if (
+                len(tok) > 1
+                and not is_cjk(tok[0])
+                and tok != " "
+                and tok_w > max_width_inches
+            ):
+                # 長 ASCII ワードを char 単位で強制分割
+                for ch in tok:
+                    ch_w = font_metrics.text_width_inches(font_path, ch, size_pt)
+                    if current == "":
+                        current = ch
+                        current_w = ch_w
+                    elif current_w + ch_w <= max_width_inches:
+                        current += ch
+                        current_w += ch_w
+                    else:
+                        flush()
+                        current = ch
+                        current_w = ch_w
+                continue
+            if current == "":
+                if tok == " ":
+                    continue
+                current = tok
+                current_w = tok_w
+                continue
+            if current_w + tok_w <= max_width_inches:
+                current += tok
+                current_w += tok_w
+            else:
+                flush()
+                if tok == " ":
+                    continue
+                current = tok
+                current_w = tok_w
+        if current != "":
+            lines += 1
+        total_lines += max(1, lines)
+    return total_lines
+
+
+def _real_paragraph_height_in(
+    font_path: str,
+    text: str,
+    usable_width: float,
+    size_pt: float,
+    line_height_factor: float = 1.2,
+) -> float:
+    """実フォントで推定した段落高さ (inches) を返す.
+
+    ``estimate_text_height`` と同じ単位換算 ``size_pt * 0.0139 *
+    line_height_factor`` を行数に掛けるのみ。空段落は 1 行分。
+    """
+    if not text:
+        return size_pt * 0.0139 * line_height_factor
+    n_lines = _real_wrap_lines(font_path, text, usable_width, size_pt)
+    return max(1, n_lines) * size_pt * 0.0139 * line_height_factor
+
+
+def _resolve_font_path(
+    font_name: Optional[str],
+    font_paths: Dict[str, str],
+) -> Optional[str]:
+    """font name → path を解決する (大文字小文字を区別しない).
+
+    厳密一致に失敗した場合、小文字化したキーとのマッチをフォールバック
+    として試す。見つからなければ None を返す (呼び出し側でヒューリス
+    ティックへフォールバック)。
+    """
+    if not font_name:
+        return None
+    if font_name in font_paths:
+        return font_paths[font_name]
+    low = font_name.lower()
+    for k, v in font_paths.items():
+        if k.lower() == low:
+            return v
+    return None
+
+
+def _estimate_frame_needed_height_real(
+    text_frame,
+    usable_width: float,
+    font_paths: Dict[str, str],
+    *,
+    default_pt: float = 18.0,
+) -> Tuple[float, float, List[str]]:
+    """実フォントで段落単位の推定高さを合算する.
+
+    戻り値は ``(total_height_in, representative_pt, missing_fonts)``。
+    ``missing_fonts`` は font_paths に未登録だった font name のユニーク
+    リストである。すべての段落で解決不能ならば長さ 0 の empty list は
+    返らない ('missing' が 1 件以上入った状態で呼び出し側に返す)。
+    """
+    total = 0.0
+    max_pt: Optional[float] = None
+    missing_seen: Dict[str, bool] = {}
+
+    paragraphs = list(text_frame.paragraphs)
+    for para in paragraphs:
+        pt = _effective_paragraph_size(para, default_pt=default_pt)
+        if max_pt is None or pt > max_pt:
+            max_pt = pt
+        text = _paragraph_text(para)
+
+        # paragraph 内の先頭 run の font.name を代表として採用する。
+        # 段落内で font を切り替えるユーザは稀 (タイトルと本文は別 paragraph)。
+        font_name: Optional[str] = None
+        for run in para.runs:
+            fn = _run_font_name(run, para)
+            if fn:
+                font_name = fn
+                break
+
+        resolved = _resolve_font_path(font_name, font_paths)
+
+        if resolved is None:
+            # フォント未解決: ヒューリスティックにフォールバックし、missing を記録
+            if font_name:
+                missing_seen[font_name] = True
+            else:
+                missing_seen["<no font>"] = True
+            if text:
+                total += estimate_text_height(text, usable_width, pt)
+            else:
+                total += pt * 0.0139 * 1.2
+            continue
+
+        try:
+            total += _real_paragraph_height_in(resolved, text, usable_width, pt)
+        except Exception:
+            # 実フォント測定に失敗した (KeyError 等) 場合もヒューリスティックへ
+            missing_seen[font_name or "<font load error>"] = True
+            if text:
+                total += estimate_text_height(text, usable_width, pt)
+            else:
+                total += pt * 0.0139 * 1.2
+
+    if max_pt is None:
+        max_pt = default_pt
+    return total, max_pt, list(missing_seen.keys())
+
+
+def _check_fonttools_available() -> None:
+    """fontTools がロード可能かを確認する。未インストール時は EngineError を送出."""
+    try:
+        import fontTools.ttLib  # noqa: F401
+    except ImportError as e:
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            "font_source='real' requires fontTools. "
+            "Install: pip install pptx-mcp-server[validation]",
+        ) from e
+
+
 def check_text_overflow(
     presentation: Presentation,
     *,
     min_readable_pt: float = 8.0,
     overflow_tolerance_pct: float = 5.0,
+    font_source: Literal["heuristic", "real"] = "heuristic",
+    font_paths: Optional[Dict[str, str]] = None,
 ) -> List[ValidationFinding]:
     """テキストフレームの高さ溢れを検出する.
 
@@ -428,7 +663,35 @@ def check_text_overflow(
     差し引いた usable width に基づき、段落単位で有効フォントサイズを解決し、
     段落ごとの推定高さを合算する。合計が frame_height × (1 + tolerance/100)
     を超える場合に ``error`` finding を返す。
+
+    ``font_source='real'`` (Issue #91) では ``font_paths`` で与えた TTF/TTC
+    を fontTools で読み、実 advance width で行分割・高さを計算する。
+    ``add_auto_fit_textbox`` と ``check_text_overflow`` が同じヒューリス
+    ティックを共有して echo chamber を作る問題を回避するためのオプトイン
+    パスである。font が解決できなかった場合はその段落のみヒューリスティッ
+    クにフォールバックし、"font X not measured" の warning finding を別途
+    発行する (同一 slide/shape につき 1 件)。
+
+    Args:
+        min_readable_pt: overflow 解消の探索下限 (pt)。
+        overflow_tolerance_pct: ``frame_height`` に対する余裕率 (%)。
+        font_source: ``"heuristic"`` (既定、既存挙動) または ``"real"``。
+        font_paths: ``{font name: TTF/TTC path}`` マップ。``font_source=
+            "real"`` のとき必須に近い (なければ全段落で fallback が発生)。
+
+    Raises:
+        EngineError(INVALID_PARAMETER): fontTools 未インストール時に
+            ``font_source='real'`` を指定した場合。
     """
+    if font_source not in ("heuristic", "real"):
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"font_source must be 'heuristic' or 'real' (got {font_source!r})",
+        )
+    if font_source == "real":
+        _check_fonttools_available()
+    resolved_font_paths: Dict[str, str] = dict(font_paths or {})
+
     findings: List[ValidationFinding] = []
     tolerance_factor = 1 + overflow_tolerance_pct / 100.0
 
@@ -449,10 +712,40 @@ def check_text_overflow(
                 continue
 
             usable_width = max(0.1, frame_width - TEXTBOX_INNER_PADDING_TOTAL)
-            needed_height, font_size = _estimate_frame_needed_height(
-                tf, usable_width
-            )
+            missing_fonts: List[str] = []
+            if font_source == "real":
+                needed_height, font_size, missing_fonts = (
+                    _estimate_frame_needed_height_real(
+                        tf, usable_width, resolved_font_paths
+                    )
+                )
+            else:
+                needed_height, font_size = _estimate_frame_needed_height(
+                    tf, usable_width
+                )
             max_allowed = frame_height * tolerance_factor
+
+            # real path で未解決 font がある場合は warning finding を発行し、
+                # その shape は heuristic fallback 済み high/needed を使い続ける。
+            if font_source == "real" and missing_fonts:
+                name = _shape_name(shape, f"Shape {shape_i}")
+                missing_display = ", ".join(sorted(missing_fonts))
+                findings.append(
+                    ValidationFinding(
+                        severity="warning",
+                        slide_index=slide_index,
+                        shape_name=name,
+                        category="font_not_measured",
+                        message=(
+                            f"font(s) not measured (no font_paths entry): "
+                            f"{missing_display}; falling back to heuristic"
+                        ),
+                        suggested_fix=(
+                            "add the font to font_paths, or call "
+                            "discover_system_fonts() to pre-populate"
+                        ),
+                    )
+                )
 
             if needed_height > max_allowed:
                 # 収まる最大代表 pt を 0.5pt 刻みで探索する。段落間の比率を
@@ -1060,6 +1353,8 @@ def check_deck_extended(
     max_lines_title: int = 1,
     max_lines_subtitle: int = 2,
     title_font_threshold: float = 14.0,
+    font_source: Literal["heuristic", "real"] = "heuristic",
+    font_paths: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """deck 全体を走査し、既存 + 拡張チェックをまとめて返す.
 
@@ -1076,6 +1371,7 @@ def check_deck_extended(
                     "divider_collision": [...],
                     "inconsistent_gaps": [...],
                     "title_wrap": [...],
+                    "font_not_measured": [...],  # real-font path のみ
                 },
                 ...
             ],
@@ -1084,6 +1380,11 @@ def check_deck_extended(
 
     既存 ``check_slide_overlaps`` の警告文字列を ``overlaps`` と
     ``out_of_bounds`` に分割して格納する (既存キーは文字列リストのまま)。
+
+    Issue #91: ``font_source='real'`` + ``font_paths`` を与えると、
+    text_overflow のチェックに実 TTF advance width が使われる。解決できな
+    かったフォントは ``font_not_measured`` (warning) に記録され、段落単位
+    でヒューリスティックにフォールバックする。
 
     Severity mapping — ``summary`` の各カウンタに寄与するカテゴリは以下のとおり:
 
@@ -1095,6 +1396,7 @@ def check_deck_extended(
     - ``warnings``:
         - ``unreadable_text`` (``check_unreadable_text``)
         - ``title_wrap`` (``check_title_wrap``)
+        - ``font_not_measured`` (real-font path でフォント未解決)
     - ``infos``:
         - ``inconsistent_gaps`` (``check_inconsistent_gaps``)
 
@@ -1109,6 +1411,8 @@ def check_deck_extended(
         presentation,
         min_readable_pt=min_readable_pt,
         overflow_tolerance_pct=overflow_tolerance_pct,
+        font_source=font_source,
+        font_paths=font_paths,
     )
     unreadable = check_unreadable_text(
         presentation,
@@ -1147,6 +1451,7 @@ def check_deck_extended(
             "divider_collision": [],
             "inconsistent_gaps": [],
             "title_wrap": [],
+            "font_not_measured": [],
         }
 
     def _place(findings: List[ValidationFinding], key: str) -> None:
@@ -1156,7 +1461,12 @@ def check_deck_extended(
                 continue
             by_slide[f.slide_index][key].append(f.to_dict())
 
-    _place(text_overflow, "text_overflow")
+    # text_overflow リストには real-font path の font_not_measured warning も
+    # 混じる可能性がある。category で振り分けて別バケツへ格納する。
+    overflow_errors = [f for f in text_overflow if f.category == "text_overflow"]
+    font_missing = [f for f in text_overflow if f.category == "font_not_measured"]
+    _place(overflow_errors, "text_overflow")
+    _place(font_missing, "font_not_measured")
     _place(unreadable, "unreadable_text")
     _place(divider, "divider_collision")
     _place(gaps, "inconsistent_gaps")
@@ -1166,12 +1476,13 @@ def check_deck_extended(
 
     # summary: ValidationFinding 由来 + legacy (overlaps / out_of_bounds) を集計する。
     # 詳細な severity mapping は docstring 参照。
-    errors = sum(1 for f in text_overflow + divider if f.severity == "error")
+    errors = sum(1 for f in overflow_errors + divider if f.severity == "error")
     for slide_data in slides_out:
         errors += len(slide_data["overlaps"])
         errors += len(slide_data["out_of_bounds"])
     warnings_count = sum(1 for f in unreadable if f.severity == "warning")
     warnings_count += sum(1 for f in title_wrap if f.severity == "warning")
+    warnings_count += sum(1 for f in font_missing if f.severity == "warning")
     infos = sum(1 for f in gaps if f.severity == "info")
 
     return {

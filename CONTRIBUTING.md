@@ -116,6 +116,43 @@ part of the default test run and also run in the library-only CI job
 If you need MCP-specific behavior, put it in `src/pptx_mcp_server/server.py`
 or a sibling module that is only imported when the CLI starts.
 
+## Validation
+
+`check_deck_extended` / `check_text_overflow` have two paths for overflow
+detection:
+
+- **`font_source="heuristic"`** (default) — zero-deps, uses the
+  `text_metrics` width heuristic. Fast, good for iteration, but shares its
+  model with `add_auto_fit_textbox`. If the heuristic drifts from real
+  PowerPoint font metrics (e.g. Yu Gothic advance tweaks, font substitution
+  policy changes), **both the auto-fit primitive and the validator drift
+  together** — a silent echo chamber.
+- **`font_source="real"`** (opt-in, `[validation]` extra) — measures
+  advance widths directly from TTF/TTC via fontTools, independent of the
+  heuristic. Requires `pip install pptx-mcp-server[validation]` and
+  `font_paths={font_name: ttf_path, ...}`. For zero-config probing use
+  `discover_system_fonts()`:
+
+  ```python
+  from pptx_mcp_server.engine.font_metrics import discover_system_fonts
+  from pptx_mcp_server.engine.validation import check_deck_extended
+
+  report = check_deck_extended(
+      prs, font_source="real", font_paths=discover_system_fonts()
+  )
+  ```
+
+When to use real vs heuristic:
+
+- CI / pre-commit quick checks → heuristic (fast, no font install required).
+- Before shipping a deck to production → real (catches drift the heuristic
+  would miss).
+- Debugging "PowerPoint clips but our validator says fine" → real path
+  likely disagrees with heuristic; that disagreement *is* the signal.
+
+Fonts that can't be resolved fall back to the heuristic per-paragraph and
+emit a `font_not_measured` warning so partial coverage is still useful.
+
 ## File safety
 
 `save_pptx` performs an atomic temp-file-then-rename (via `os.replace`), so
