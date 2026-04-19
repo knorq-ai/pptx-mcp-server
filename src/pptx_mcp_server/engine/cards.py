@@ -57,6 +57,12 @@ _BLOCK_HEIGHT_SLACK: float = 1.05
 class CardSpec:
     """1 枚のカードの内容・スタイル定義.
 
+    幅 (width) はこの spec に持たせない。レイアウト幅は
+    :func:`add_responsive_card_row` の ``width`` 引数 (= 行幅) から
+    カード数・``gap`` にもとづき一意に算出され、結果は :class:`CardPlacement`
+    の ``width`` として返る。つまり幅は layout の **出力** であって
+    CardSpec の **入力** ではない。
+
     Attributes:
         title: タイトル文字列。空文字列でブロックを省略する。
         body: 本文文字列。空文字列でブロックを省略する。
@@ -71,8 +77,6 @@ class CardSpec:
         label_size_pt: ラベル font size (pt)。
         label_color: ラベル文字色 (6 桁 hex)。
         padding: カード内側 padding (inches、上下左右共通)。
-        width: ``add_responsive_card_row`` では読み書きしない (後方互換のため
-            フィールド自体は残す)。レイアウト幅は行幅から一意に算出される。
     """
 
     title: str = ""
@@ -87,7 +91,6 @@ class CardSpec:
     label_size_pt: float = 9
     label_color: str = "666666"
     padding: float = 0.2
-    width: float = 0.0
 
 
 @dataclass
@@ -141,16 +144,14 @@ def _estimate_block_heights(
     return label_h, title_h, body_h, n_blocks
 
 
-def _content_height(card: CardSpec, width: float | None = None) -> float:
+def _content_height(card: CardSpec, width: float) -> float:
     """カードの content 高 (padding 込み、intra_gap 含む) を返す.
 
     Args:
         card: 対象カード。
-        width: カード幅 (inches)。``None`` の場合は ``card.width`` を使う
-            (後方互換のための挙動だが、呼び出し側で明示するのが推奨)。
+        width: カード幅 (inches)。呼び出し側が layout 計算結果を明示で渡す。
     """
-    w = width if width is not None else card.width
-    label_h, title_h, body_h, n_blocks = _estimate_block_heights(card, w)
+    label_h, title_h, body_h, n_blocks = _estimate_block_heights(card, width)
     if n_blocks == 0:
         return card.padding * 2
     return (
