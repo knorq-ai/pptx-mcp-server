@@ -5,6 +5,7 @@ PPTX file I/O — open, save, create, error types.
 from __future__ import annotations
 
 import os
+import tempfile
 from enum import Enum
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
@@ -38,8 +39,38 @@ def open_pptx(file_path: str) -> Presentation:
 
 
 def save_pptx(prs: Presentation, file_path: str) -> None:
-    """Save a presentation to disk."""
-    prs.save(file_path)
+    """PPTX を原子的に保存する。
+
+    同一ディレクトリに一時ファイルを書き出したあと ``os.replace`` で rename する。
+    ``os.replace`` は POSIX でも Windows でも atomic であり、
+    途中で失敗しても元のファイルは損なわれない。
+
+    注意: 原子性は同一ファイルシステム内でのみ保証されるため、一時ファイルは
+    必ず target と同じディレクトリに作る。クロスマウントでの temp+rename は
+    静かに degrade するため避ける。
+
+    なお本関数はクラッシュ耐性のみを目的としており、マルチプロセス間の
+    書き込み排他は行わない (単一ライター契約。詳細は CONTRIBUTING.md 参照)。
+    """
+    abs_path = os.path.abspath(file_path)
+    dir_ = os.path.dirname(abs_path) or "."
+    # mkstemp で同一ディレクトリ内にユニークな一時パスを確保する。
+    # NamedTemporaryFile は open 済み fd を保持するが、python-pptx は
+    # パスから自前で open するため fd は不要。ここでは名前だけ欲しい。
+    fd, tmp_path = tempfile.mkstemp(
+        dir=dir_,
+        prefix="." + os.path.basename(abs_path) + ".tmp.",
+    )
+    os.close(fd)
+    try:
+        prs.save(tmp_path)
+        os.replace(tmp_path, abs_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def create_presentation(
