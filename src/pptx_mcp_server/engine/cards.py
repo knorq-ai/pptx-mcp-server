@@ -25,8 +25,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .layout_constants import (
+    TEXTBOX_INNER_PADDING_PER_SIDE as _AUTO_FIT_PADDING_PER_SIDE,
+)
 from .pptx_io import EngineError, ErrorCode
-from .shapes import _AUTO_FIT_PADDING_PER_SIDE, _add_shape, add_auto_fit_textbox
+from .shapes import _add_shape, add_auto_fit_textbox
 from .text_metrics import estimate_text_height
 
 CardHeightMode = Literal["content", "max", "fill"]

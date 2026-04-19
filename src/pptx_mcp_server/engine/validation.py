@@ -16,6 +16,10 @@ from pptx import Presentation
 from pptx.enum.text import MSO_ANCHOR
 from pptx.util import Emu
 
+from .layout_constants import (
+    TEXTBOX_INNER_PADDING_PER_SIDE,
+    TEXTBOX_INNER_PADDING_TOTAL,
+)
 from .text_metrics import estimate_text_height, estimate_text_width
 
 # ---------------------------------------------------------------------------
@@ -372,10 +376,10 @@ def check_text_overflow(
 ) -> List[ValidationFinding]:
     """テキストフレームの高さ溢れを検出する.
 
-    各 text frame の幅 (左右 0.05" マージン合計) に基づき、段落単位で
-    有効フォントサイズを解決し、段落ごとの推定高さを合算する。合計が
-    frame_height × (1 + tolerance/100) を超える場合に ``error`` finding
-    を返す。
+    各 text frame の幅から左右の ``TEXTBOX_INNER_PADDING_TOTAL`` (= 0.10") を
+    差し引いた usable width に基づき、段落単位で有効フォントサイズを解決し、
+    段落ごとの推定高さを合算する。合計が frame_height × (1 + tolerance/100)
+    を超える場合に ``error`` finding を返す。
     """
     findings: List[ValidationFinding] = []
     tolerance_factor = 1 + overflow_tolerance_pct / 100.0
@@ -396,7 +400,7 @@ def check_text_overflow(
             if not text.strip():
                 continue
 
-            usable_width = max(0.1, frame_width - 0.10)
+            usable_width = max(0.1, frame_width - TEXTBOX_INNER_PADDING_TOTAL)
             needed_height, font_size = _estimate_frame_needed_height(
                 tf, usable_width
             )
@@ -496,7 +500,7 @@ def _is_footer_zone_shape(
         return False
 
     # 行数 (段落ごとに折返し推定)
-    usable_width = max(0.1, s_width - 0.10)
+    usable_width = max(0.1, s_width - TEXTBOX_INNER_PADDING_TOTAL)
     total_lines = 0
     for para in text_frame.paragraphs:
         text = _paragraph_text(para)
@@ -685,7 +689,9 @@ def check_divider_collision(
                 text = _full_text(tf)
                 if not text.strip():
                     continue
-                frame_width = max(0.1, (s_right - s_left) - 0.10)
+                frame_width = max(
+                    0.1, (s_right - s_left) - TEXTBOX_INNER_PADDING_TOTAL
+                )
                 needed_height, font_size = _estimate_frame_needed_height(
                     tf, frame_width
                 )
