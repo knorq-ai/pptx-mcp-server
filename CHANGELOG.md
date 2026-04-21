@@ -2,6 +2,66 @@
 
 All notable changes to `pptx-mcp-server` are documented in this file.
 
+## v0.5.0 — theme-aware primitives
+
+Closes the ergonomic gaps Codex gpt-5.4 flagged in the v0.4.0 review:
+primitives now resolve theme tokens (`"rule_subtle"`, `"primary"`, etc.)
+instead of only accepting raw hex. Closes #123, #124, #125.
+
+### New
+
+- **`theme.resolve_theme_color(token_or_hex, theme_name)`** — central
+  helper that resolves theme tokens to 6-hex (without `#` prefix).
+  Handles theme registry lookup, unknown-token passthrough, and empty-string
+  disable signal.
+
+### Changed
+
+- **`add_responsive_card_row`** now accepts a `theme: str | None = None`
+  kwarg. All `CardSpec` color fields (`fill_color`, `accent_color`,
+  `border_color`, `title_color`, `body_color`, `label_color`) resolve
+  theme tokens. Cards are copied via `dataclasses.replace` — caller
+  input is not mutated.
+- **`add_data_table`** accepts `theme` kwarg. `alt_row_color`,
+  `highlight_color`, `rule_color`, and per-column `value_color` /
+  `header_color` all resolve theme tokens.
+- **`add_milestone_timeline`** now actually uses its `theme` arg.
+  `phase_rule_color`, `milestone_rule_color`, and milestone style colors
+  (primary/secondary) all resolve through the theme.
+
+### Non-breaking
+
+- Raw hex still works as before (passthrough with `#` stripped)
+- `theme=None` is the default — no behavior change for existing callers
+- MCP tools `pptx_add_responsive_card_row`, `pptx_add_data_table`,
+  `pptx_add_milestone_timeline` each gain an optional `theme` param
+
+### Tests
+
+713 passing (up from 703). +10 regression tests across
+`test_theme.py`, `test_cards.py`, `test_timeline.py`.
+
+## v0.4.1 — IR primitives polish
+
+Flagged by Codex gpt-5.4 v0.4.0 review. Four surgical fixes to the IR
+primitives shipped in v0.4.0.
+
+### Fixes
+
+- **#119** — `add_milestone_timeline` now anchors rules at the declared
+  `chart_top`, not `top + phase_band_height`. The param was being validated
+  but not used. Contract now matches documentation.
+- **#120** — `pptx_add_data_table` and `pptx_add_milestone_timeline` now
+  include a `message` key in their result, matching the v0.3.0 envelope
+  invariant that `result` is always a dict with at least `message`.
+- **#121** — `add_data_table` rejects `rule_thickness < 0` with
+  `INVALID_PARAMETER` instead of silently producing negative-height rule
+  rectangles.
+- **#122** — `INSTRUCTIONS` themes enumeration now lists all 4 themes
+  (`mckinsey`, `deloitte`, `neutral`, `ir`).
+
+700 → 703 tests passing.
+
 ## v0.3.1 — close OpenAI/Codex 5.4 remaining blockers
 
 Flagged by the OpenAI/Codex 5.4 v0.3.0 review as the remaining partials that

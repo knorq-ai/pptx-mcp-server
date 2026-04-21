@@ -786,6 +786,7 @@ def pptx_add_responsive_card_row(
     gap: float = 0.2,
     height_mode: str = "max",
     min_card_height: float = 1.0,
+    theme: Optional[str] = None,
 ) -> str:
     """Add a row of variable-height cards that auto-size to content and align to the max content height.
 
@@ -842,6 +843,7 @@ def pptx_add_responsive_card_row(
             gap=gap,
             height_mode=height_mode,  # type: ignore[arg-type]
             min_card_height=min_card_height,
+            theme=theme,
         )
 
         # CardPlacement を JSON 化可能な dict に変換する (save 前に行う)。
@@ -892,6 +894,7 @@ def pptx_add_data_table(
     rule_thickness: float = 0.01,
     header_rule: bool = True,
     font_name: str = "Arial",
+    theme: Optional[str] = None,
 ) -> str:
     """Add a financial/dense data table rendered as a textbox grid (NOT python-pptx Table).
 
@@ -980,6 +983,7 @@ def pptx_add_data_table(
             rule_thickness=rule_thickness,
             header_rule=header_rule,
             font_name=font_name,
+            theme=theme,
         )
 
         # Envelope invariant: result must have 'message' (#120).

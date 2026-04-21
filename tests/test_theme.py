@@ -126,3 +126,44 @@ class TestIRTheme:
         after = len(list_themes_reloaded())
         assert after == before
         assert list_themes_reloaded().count("ir") == 1
+
+
+# ---------------------------------------------------------------------------
+# resolve_theme_color (v0.5.0 central resolver — #123/#124/#125)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveThemeColor:
+    def test_theme_token_resolves_to_hex(self):
+        from pptx_mcp_server.theme import resolve_theme_color
+        # IR theme's "rule_subtle" = "#E0E0E0"
+        assert resolve_theme_color("rule_subtle", "ir") == "E0E0E0"
+        assert resolve_theme_color("primary", "ir") == "0A2540"
+        assert resolve_theme_color("highlight_row", "ir") == "F0F0F0"
+
+    def test_raw_hex_passthrough_with_hash_stripped(self):
+        from pptx_mcp_server.theme import resolve_theme_color
+        assert resolve_theme_color("#FF0000", "ir") == "FF0000"
+        assert resolve_theme_color("051C2C", "mckinsey") == "051C2C"
+
+    def test_unknown_token_passthrough(self):
+        from pptx_mcp_server.theme import resolve_theme_color
+        # Unknown token with theme — no resolution match, returns as-is (stripped)
+        assert resolve_theme_color("no_such_token", "ir") == "no_such_token"
+
+    def test_empty_string_returns_empty(self):
+        from pptx_mcp_server.theme import resolve_theme_color
+        # Empty string is caller's "disable" signal
+        assert resolve_theme_color("", "ir") == ""
+        assert resolve_theme_color("", None) == ""
+
+    def test_no_theme_passthrough_strips_hash(self):
+        from pptx_mcp_server.theme import resolve_theme_color
+        assert resolve_theme_color("#ABCDEF", None) == "ABCDEF"
+        # No theme + unknown token → token returned as-is (caller deals)
+        assert resolve_theme_color("primary", None) == "primary"
+
+    def test_unregistered_theme_name_falls_back(self):
+        from pptx_mcp_server.theme import resolve_theme_color
+        # Theme doesn't exist → behaves like theme=None
+        assert resolve_theme_color("#ABCDEF", "nonexistent") == "ABCDEF"
