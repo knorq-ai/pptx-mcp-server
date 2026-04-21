@@ -110,6 +110,11 @@ from .tables_grid import (
     TableColumnSpec,
     add_data_table,
 )
+from .timeline import (
+    TimelinePhase,
+    TimelineMilestone,
+    add_milestone_timeline,
+)
 
 __all__ = [
     # Layout constants
@@ -148,6 +153,8 @@ __all__ = [
     "CardSpec", "CardHeightMode", "CardPlacement", "add_responsive_card_row",
     # Data tables (textbox grid)
     "TableColumnSpec", "add_data_table",
+    # Timeline
+    "TimelinePhase", "TimelineMilestone", "add_milestone_timeline",
     # Rendering
     "render_slide", "render_slide_to_path",
 ]
