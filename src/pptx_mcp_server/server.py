@@ -108,6 +108,9 @@ from .engine import (
     add_responsive_card_row,
     TableColumnSpec,
     add_data_table,
+    TimelinePhase,
+    TimelineMilestone,
+    add_milestone_timeline,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -980,6 +983,122 @@ def pptx_add_data_table(
 
         # save 前に return 値構築が終わっているため、以降の save 失敗で
         # 中途半端な状態にならない (#34 と同じポリシー)。
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_milestone_timeline(
+    file_path: str,
+    slide_index: int,
+    phases: List[Dict[str, Any]],
+    milestones: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    chart_top: float,
+    chart_bottom: float,
+    phase_band_height: float = 0.9,
+    phase_rule_color: str = "E0E0E0",
+    milestone_rule_color: str = "C0C0C0",
+    milestone_font_size_pt: float = 9,
+    milestone_year_font_size_pt: float = 11,
+    theme: str = "mckinsey",
+) -> str:
+    """Overlay a phase band + vertical rules + year-labeled milestone annotations on an existing chart area.
+
+    For IR-style growth-story slides: place your chart first (at
+    ``chart_top``..``chart_bottom`` vertical range), then call this tool with
+    the same ``left``/``width`` to paint phase labels and milestone callouts.
+
+    ``phases``: list of dicts with keys ``label``, ``index_label``,
+    ``year_range`` (all strings). Empty list skips the phase band.
+
+    ``milestones``: list of dicts with keys ``x_pos`` (0.0-1.0 relative to
+    chart area width), ``year``, ``label`` (``\\n`` for line breaks), and
+    optional ``style`` (``"primary"`` | ``"secondary"``).
+    """
+    try:
+        if not isinstance(phases, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "phases must be a list of dicts.",
+                parameter="phases",
+                hint="Pass a native list, e.g. [{\"label\":\"Phase 1\",\"index_label\":\"01\",\"year_range\":\"2012-2016\"}].",
+            )
+        if not isinstance(milestones, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "milestones must be a list of dicts.",
+                parameter="milestones",
+                hint="Pass a native list, e.g. [{\"x_pos\":0.5,\"year\":\"2016\",\"label\":\"IPO\"}].",
+            )
+
+        _phase_known = {f.name for f in fields(TimelinePhase)}
+        for i, spec in enumerate(phases):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"phases[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            unknown = set(spec.keys()) - _phase_known
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"phases[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_phase_known)}."
+                    ),
+                )
+
+        _milestone_known = {f.name for f in fields(TimelineMilestone)}
+        for i, spec in enumerate(milestones):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"milestones[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            unknown = set(spec.keys()) - _milestone_known
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"milestones[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_milestone_known)}."
+                    ),
+                )
+
+        phase_objs = [TimelinePhase(**d) for d in phases]
+        milestone_objs = [TimelineMilestone(**d) for d in milestones]
+
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_milestone_timeline(
+            slide,
+            phase_objs,
+            milestone_objs,
+            left=left,
+            top=top,
+            width=width,
+            phase_band_height=phase_band_height,
+            chart_top=chart_top,
+            chart_bottom=chart_bottom,
+            phase_rule_color=phase_rule_color,
+            milestone_rule_color=milestone_rule_color,
+            milestone_font_size_pt=milestone_font_size_pt,
+            milestone_year_font_size_pt=milestone_year_font_size_pt,
+            theme=theme,
+        )
+
         save_pptx(prs, file_path)
 
         render_info = _auto_render(file_path, slide_index)
