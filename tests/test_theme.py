@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import pytest
 
-from pptx_mcp_server.theme import MCKINSEY, Theme, resolve_color
+import importlib
+
+from pptx_mcp_server.theme import IR, MCKINSEY, Theme, get_theme, list_themes, resolve_color
 
 
 class TestMcKinseyThemeStructure:
@@ -74,3 +76,53 @@ class TestResolveColor:
 
     def test_none_theme_passes_through(self):
         assert resolve_color(None, "#ABCDEF") == "#ABCDEF"
+
+
+class TestIRTheme:
+    """IR theme: クリーム背景 + ネイビーの和製コーポレート IR プリセット。"""
+
+    def test_get_theme_returns_ir(self):
+        theme = get_theme("ir")
+        assert theme is not None
+        assert theme is IR
+        # 必須色キーが揃っていること
+        expected_color_keys = {
+            "primary",
+            "accent",
+            "background",
+            "rule_strong",
+            "rule_subtle",
+            "highlight_row",
+            "positive",
+            "negative",
+            "text_primary",
+            "text_secondary",
+        }
+        assert expected_color_keys.issubset(theme.colors.keys())
+
+    def test_slide_dimensions_hd_widescreen(self):
+        # IR spec: 20.0 x 11.25 インチ (HD ワイド)。既定の 13.333 x 7.5 ではない。
+        assert IR.slide["width"] == 20.0
+        assert IR.slide["height"] == 11.25
+
+    def test_east_asian_font_is_yu_gothic(self):
+        assert IR.fonts["east_asian"] == "Yu Gothic"
+
+    def test_chart_colors_has_six_entries(self):
+        assert len(IR.chart_colors) == 6
+
+    def test_ir_in_list_themes(self):
+        assert "ir" in list_themes()
+
+    def test_registration_is_idempotent(self):
+        # theme.py を再 import しても重複登録されない (register_theme は上書き)。
+        before = len(list_themes())
+        import pptx_mcp_server.theme as theme_module
+
+        importlib.reload(theme_module)
+        # reload 後も "ir" は 1 回だけ登録されている。
+        from pptx_mcp_server.theme import list_themes as list_themes_reloaded
+
+        after = len(list_themes_reloaded())
+        assert after == before
+        assert list_themes_reloaded().count("ir") == 1

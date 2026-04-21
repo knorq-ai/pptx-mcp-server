@@ -101,6 +101,19 @@ and is only required when launching the `pptx-mcp-server` CLI / importing
 `tests/test_library_usage.py` enforces that, and
 `tests/test_packaging_extras.py` enforces the packaging side of the split.
 
+### Built-in themes
+
+`pptx_mcp_server.theme` ships four passive theme presets. Pick one by passing
+`"theme": "<name>"` in a slide/deck spec, or import the module constant
+directly (`MCKINSEY`, `DELOITTE`, `NEUTRAL`, `IR`):
+
+| Name | Description |
+|------|-------------|
+| `mckinsey` | McKinsey-inspired. Dark navy (`#051C2C`) primary + bright blue (`#2251FF`) accent on white. 16:9 widescreen (13.333x7.5"). |
+| `deloitte` | Deloitte-inspired. Navy (`#002776`) primary + green (`#81BC00`) accent with multi-color palette. 16:9 widescreen. |
+| `neutral` | Clean, universally safe. Dark gray (`#333333`) primary + soft blue (`#4A90D9`) accent. 16:9 widescreen. |
+| `ir` | Japanese corporate IR / quarterly-report style. Cream background (`#F8F9F5`), deep navy (`#0A2540`) primary + blue (`#1E3A8A`) accent. HD widescreen dimensions (20x11.25"). Yu Gothic east-asian font. |
+
 ### Supported scripts
 
 The auto-layout engine (`pptx_mcp_server.engine.text_metrics`) uses a
