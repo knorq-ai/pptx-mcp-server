@@ -294,3 +294,35 @@ def test_milestone_primary_style_uses_theme_primary_color_on_label(one_slide_prs
     run = label.text_frame.paragraphs[0].runs[0]
     # IR theme primary = #0A2540
     assert str(run.font.color.rgb) == "0A2540"
+
+
+# ---------------------------------------------------------------------------
+# v0.5.1: theme defaults to None (was "mckinsey" through v0.5.0)
+# ---------------------------------------------------------------------------
+
+
+def test_theme_defaults_to_none_no_auto_mckinsey_resolution(one_slide_prs):
+    """theme omitted → unknown tokens passed through as-is, not silently
+    resolved via mckinsey. Pins v0.5.1 contract (Codex gpt-5.4 v0.5.0 review
+    found that timeline tool defaulted to theme='mckinsey', breaking the
+    'theme=None preserves behavior' claim).
+    """
+    from pptx_mcp_server.engine.timeline import add_milestone_timeline, TimelinePhase
+    slide = one_slide_prs.slides[0]
+    result = add_milestone_timeline(
+        slide,
+        phases=[
+            TimelinePhase(label="A", index_label="01", year_range="2012-2016"),
+            TimelinePhase(label="B", index_label="02", year_range="2017-2020"),
+        ],
+        milestones=[],
+        left=1.0, top=1.0, width=8.0,
+        phase_band_height=0.5,
+        chart_top=2.0, chart_bottom=5.0,
+        phase_rule_color="FF00FF",  # raw hex
+        # theme omitted — must not trigger mckinsey resolution
+    )
+    phase_rules = [r for r in result["rule_shapes"] if r.get("kind") == "phase_rule"]
+    shape = slide.shapes[phase_rules[0]["shape_index"]]
+    # Raw hex should pass through unchanged
+    assert str(shape.fill.fore_color.rgb) == "FF00FF"
