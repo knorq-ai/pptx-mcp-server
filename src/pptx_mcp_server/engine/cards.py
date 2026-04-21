@@ -53,6 +53,9 @@ _ACCENT_BAR_W: float = 0.08
 # 吸収し、PowerPoint 実描画でのクリップを避けるためのマージン。
 _BLOCK_HEIGHT_SLACK: float = 1.05
 
+# inches → points 換算係数 (``_add_shape`` の ``line_width`` は pt 単位)。
+_POINTS_PER_INCH: float = 72.0
+
 
 @dataclass
 class CardSpec:
@@ -78,6 +81,12 @@ class CardSpec:
         label_size_pt: ラベル font size (pt)。
         label_color: ラベル文字色 (6 桁 hex)。
         padding: カード内側 padding (inches、上下左右共通)。
+        border_color: カード枠線の色 (6 桁 hex、``#`` なし)。空文字列で
+            枠線を描画しない (既定)。
+        border_width: カード枠線の太さ (inches)。``0.0`` 以下で枠線を
+            描画しない (既定)。``border_color`` と ``border_width > 0`` の
+            両方を満たした場合のみ枠線を描画する。典型値は ``0.01``
+            (hairline 相当)。
     """
 
     title: str = ""
@@ -92,6 +101,8 @@ class CardSpec:
     label_size_pt: float = 9
     label_color: str = "666666"
     padding: float = 0.2
+    border_color: str = ""
+    border_width: float = 0.0
 
 
 @dataclass
@@ -184,17 +195,37 @@ def _render_card(
     ``mode="fill"`` かつ content が h より短い場合、label は先頭固定のまま
     title + body のグループを垂直方向に中央揃えで配置する。
     """
-    # 1) 背景矩形
-    _add_shape(
-        slide,
-        shape_type="rectangle",
-        left=left,
-        top=top,
-        width=w,
-        height=h,
-        fill_color=card.fill_color,
-        no_line=True,
-    )
+    # 1) 背景矩形。``border_color`` が非空かつ ``border_width > 0`` の
+    #    両方が揃った場合のみ枠線を描く。片方だけ指定された (例:
+    #    ``border_color`` 指定 + ``border_width=0``) 場合は枠線を描かず
+    #    既定の no-line に落とす (defensive; 0 幅の枠線は視覚的に意味が
+    #    無く、PowerPoint 側の挙動に任せるとハイラインが出るケースが
+    #    あるため明示的に抑止する)。
+    if card.border_color and card.border_width > 0:
+        _add_shape(
+            slide,
+            shape_type="rectangle",
+            left=left,
+            top=top,
+            width=w,
+            height=h,
+            fill_color=card.fill_color,
+            line_color=card.border_color,
+            # ``_add_shape`` の ``line_width`` は pt 単位だが、CardSpec は
+            # 他の寸法と一貫して inches で受け取るため、ここで pt へ変換する。
+            line_width=card.border_width * _POINTS_PER_INCH,
+        )
+    else:
+        _add_shape(
+            slide,
+            shape_type="rectangle",
+            left=left,
+            top=top,
+            width=w,
+            height=h,
+            fill_color=card.fill_color,
+            no_line=True,
+        )
 
     # 2) 任意の左アクセントバー
     if card.accent_color:

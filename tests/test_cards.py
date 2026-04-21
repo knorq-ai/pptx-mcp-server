@@ -568,3 +568,144 @@ class TestCardRowGeometryValidation:
             max_height=1.0, min_card_height=1.0,
         )
         assert len(placements) == 1
+
+
+# -----------------------------------------------------------------------------
+# #111: CardSpec border fields
+# -----------------------------------------------------------------------------
+
+
+class TestCardSpecBorder:
+    """``CardSpec.border_color`` / ``border_width`` による枠線描画 (#111).
+
+    背景矩形の ``shape.line`` に枠線が設定されるかをケース別に検証する。
+    ``border_color`` + ``border_width > 0`` の両方が揃ったときだけ描画し、
+    片方欠落の場合は既定の no-line に落ちる。
+    """
+
+    def test_border_color_and_width_draws_visible_line(self, slide):
+        """``border_color='E0E0E0'`` + ``border_width=0.01`` で背景矩形に
+        枠線が引かれ、``shape.line.color.rgb`` が指定色と一致する."""
+        from pptx.dml.color import RGBColor
+        from pptx.enum.dml import MSO_FILL
+
+        cards = [CardSpec(title="T", body="body", border_color="E0E0E0", border_width=0.01)]
+        add_responsive_card_row(
+            slide, cards,
+            left=0.5, top=0.5, width=5.0, max_height=3.0,
+            gap=0.2, height_mode="max",
+        )
+
+        bg = list(slide.shapes)[0]
+        # 塗り潰された (= background ではない) 線が付いている
+        assert bg.line.fill.type == MSO_FILL.SOLID
+        assert bg.line.color.rgb == RGBColor(0xE0, 0xE0, 0xE0)
+        # line width は pt 単位で記録される (0.01 inch × 72 ≈ 0.72 pt)
+        # EMU での width > 0 を確認
+        assert bg.line.width > 0
+
+    def test_default_no_border_sets_line_background(self, slide):
+        """border 指定無しの既定では従来どおり ``shape.line.fill.type`` が
+        ``MSO_FILL.BACKGROUND`` (no-line) になる (回帰防止)."""
+        from pptx.enum.dml import MSO_FILL
+
+        cards = [CardSpec(title="T", body="body")]
+        add_responsive_card_row(
+            slide, cards,
+            left=0.5, top=0.5, width=5.0, max_height=3.0,
+            gap=0.2, height_mode="max",
+        )
+
+        bg = list(slide.shapes)[0]
+        assert bg.line.fill.type == MSO_FILL.BACKGROUND
+
+    def test_border_color_with_zero_width_silently_disables(self, slide):
+        """``border_color`` が非空でも ``border_width=0`` なら枠線を描かない
+        (defensive; 0 幅枠線は視覚的に意味が無いため no-line に落とす)."""
+        from pptx.enum.dml import MSO_FILL
+
+        cards = [CardSpec(title="T", body="body", border_color="E0E0E0", border_width=0.0)]
+        add_responsive_card_row(
+            slide, cards,
+            left=0.5, top=0.5, width=5.0, max_height=3.0,
+            gap=0.2, height_mode="max",
+        )
+
+        bg = list(slide.shapes)[0]
+        assert bg.line.fill.type == MSO_FILL.BACKGROUND
+
+    def test_border_width_with_empty_color_silently_disables(self, slide):
+        """``border_width > 0`` でも ``border_color`` が空なら no-line."""
+        from pptx.enum.dml import MSO_FILL
+
+        cards = [CardSpec(title="T", body="body", border_color="", border_width=0.01)]
+        add_responsive_card_row(
+            slide, cards,
+            left=0.5, top=0.5, width=5.0, max_height=3.0,
+            gap=0.2, height_mode="max",
+        )
+
+        bg = list(slide.shapes)[0]
+        assert bg.line.fill.type == MSO_FILL.BACKGROUND
+
+    def test_mcp_tool_passes_border_fields_through(self, pptx_file):
+        """``pptx_add_responsive_card_row`` MCP ツール経由で
+        ``border_color`` / ``border_width`` を dict に乗せて渡せる
+        (strict-key validation が ``fields(CardSpec)`` 経由なので
+        新フィールドも自動で許可される)."""
+        import json
+
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.dml import MSO_FILL
+
+        from pptx_mcp_server.server import pptx_add_responsive_card_row
+
+        cards = [
+            {"title": "A", "body": "a", "border_color": "CCCCCC", "border_width": 0.01},
+            {"title": "B", "body": "b", "border_color": "CCCCCC", "border_width": 0.01},
+        ]
+        out = pptx_add_responsive_card_row(
+            file_path=pptx_file,
+            slide_index=0,
+            cards=cards,
+            left=0.5,
+            top=0.5,
+            width=10.0,
+            max_height=3.0,
+            gap=0.2,
+            height_mode="max",
+            min_card_height=1.0,
+        )
+        # 成功レスポンス: JSON 形式、エラーは含まない
+        assert "INVALID_PARAMETER" not in out
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert len(parsed["result"]["cards"]) == 2
+
+        # 実ファイルを開いて最初の shape (card 0 の背景) の line 色を確認
+        prs = Presentation(pptx_file)
+        slide0 = prs.slides[0]
+        bg0 = list(slide0.shapes)[0]
+        assert bg0.line.fill.type == MSO_FILL.SOLID
+        assert bg0.line.color.rgb == RGBColor(0xCC, 0xCC, 0xCC)
+
+    def test_mcp_tool_rejects_unknown_key_still(self, pptx_file):
+        """``border_color`` と無関係のタイポは依然として拒否される
+        (strict-key validation の回帰防止)."""
+        from pptx_mcp_server.server import pptx_add_responsive_card_row
+
+        cards = [{"title": "A", "border_colorrr": "CCCCCC"}]
+        out = pptx_add_responsive_card_row(
+            file_path=pptx_file,
+            slide_index=0,
+            cards=cards,
+            left=0.5,
+            top=0.5,
+            width=10.0,
+            max_height=3.0,
+            gap=0.2,
+            height_mode="max",
+            min_card_height=1.0,
+        )
+        assert "INVALID_PARAMETER" in out or "unknown" in out
