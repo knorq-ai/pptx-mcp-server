@@ -437,7 +437,7 @@ def add_milestone_timeline(
     milestone_rule_color: str = "C0C0C0",
     milestone_font_size_pt: float = 9,
     milestone_year_font_size_pt: float = 11,
-    theme: str = "mckinsey",
+    theme: Optional[str] = None,
 ) -> dict:
     """フェーズ帯 + 垂直ルール + マイルストーン注記を描画する.
 

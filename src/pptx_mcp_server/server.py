@@ -1022,7 +1022,7 @@ def pptx_add_milestone_timeline(
     milestone_rule_color: str = "C0C0C0",
     milestone_font_size_pt: float = 9,
     milestone_year_font_size_pt: float = 11,
-    theme: str = "mckinsey",
+    theme: Optional[str] = None,
 ) -> str:
     """Overlay a phase band + vertical rules + year-labeled milestone annotations on an existing chart area.
 

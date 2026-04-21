@@ -2,6 +2,23 @@
 
 All notable changes to `pptx-mcp-server` are documented in this file.
 
+## v0.5.1 — timeline theme default
+
+Flagged by Codex gpt-5.4 v0.5.0 review: the timeline tool
+(`pptx_add_milestone_timeline` + engine `add_milestone_timeline`) still
+defaulted to `theme="mckinsey"` instead of `None`. Omitting `theme` was
+not neutral — passing an unknown token without explicit theme silently
+resolved via mckinsey.
+
+### Fix
+
+- `add_milestone_timeline`: `theme: str = "mckinsey"` → `Optional[str] = None`
+- `pptx_add_milestone_timeline`: same
+- Both now consistent with `add_responsive_card_row` and `add_data_table`
+- Regression test pins the contract
+
+713 → 714 tests passing.
+
 ## v0.5.0 — theme-aware primitives
 
 Closes the ergonomic gaps Codex gpt-5.4 flagged in the v0.4.0 review:
