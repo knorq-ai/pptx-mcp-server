@@ -212,3 +212,38 @@ def test_highlight_row_out_of_range_raises(slide):
             highlight_row_index=5,
         )
     assert ei.value.code == ErrorCode.INVALID_PARAMETER
+
+
+# ---------------------------------------------------------------------------
+# Issue #121 — rule_thickness validation
+# ---------------------------------------------------------------------------
+
+
+def test_negative_rule_thickness_rejected(one_slide_prs):
+    """rule_thickness < 0 must raise INVALID_PARAMETER (#121).
+
+    Pre-fix: produced negative-height rule rectangles silently.
+    """
+    slide = one_slide_prs.slides[0]
+    columns = [TableColumnSpec(header="x")]
+    with pytest.raises(EngineError) as ei:
+        add_data_table(
+            slide, [["a"]], columns,
+            left=0.5, top=1.0, width=1.0,
+            rule_thickness=-0.01,
+        )
+    assert ei.value.code == ErrorCode.INVALID_PARAMETER
+    assert "rule_thickness" in str(ei.value)
+
+
+def test_zero_rule_thickness_ok(one_slide_prs):
+    """rule_thickness=0 is valid (means no rules rendered)."""
+    slide = one_slide_prs.slides[0]
+    columns = [TableColumnSpec(header="x")]
+    # Should not raise
+    result = add_data_table(
+        slide, [["a"]], columns,
+        left=0.5, top=1.0, width=1.0,
+        rule_thickness=0.0,
+    )
+    assert result["consumed_height"] > 0

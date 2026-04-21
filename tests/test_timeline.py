@@ -205,3 +205,41 @@ def test_secondary_style_uses_gray(slide):
     run = shape.text_frame.paragraphs[0].runs[0]
     rgb = run.font.color.rgb
     assert str(rgb) == "666666"
+
+
+# ---------------------------------------------------------------------------
+# Issue #119 — chart_top regression
+# ---------------------------------------------------------------------------
+
+
+def test_milestone_rules_anchor_at_chart_top(one_slide_prs: Presentation) -> None:
+    """chart_top (not top+phase_band_height) must be the rule anchor (#119).
+
+    Before the fix: milestone rules always started at `top + phase_band_height`,
+    ignoring chart_top. This test pins the corrected contract.
+    """
+    slide = one_slide_prs.slides[0]
+
+    result = add_milestone_timeline(
+        slide,
+        phases=[],
+        milestones=[
+            TimelineMilestone(x_pos=0.5, year="2020", label="Test"),
+        ],
+        left=1.0,
+        top=1.0,
+        width=10.0,
+        phase_band_height=0.5,   # top + phase_band_height = 1.5
+        chart_top=3.0,           # chart explicitly starts at y=3.0
+        chart_bottom=6.0,
+    )
+
+    emu_per_in = 914400
+    milestone_rules = [r for r in result["rule_shapes"] if r.get("kind") == "milestone_rule"]
+    assert milestone_rules, "expected at least one milestone rule shape"
+    for rule in milestone_rules:
+        shape = slide.shapes[rule["shape_index"]]
+        y_in = shape.top / emu_per_in
+        assert abs(y_in - 3.0) < 0.01, (
+            f"Milestone rule top={y_in:.3f}, expected 3.0 (chart_top)"
+        )
