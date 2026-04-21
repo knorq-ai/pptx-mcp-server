@@ -1,8 +1,9 @@
 """
 Theme definitions for presentation styling.
 
-Provides a Theme dataclass, built-in themes (McKinsey, Deloitte, Neutral),
-a theme registry for lookup by name, and color utilities (tint/shade).
+Provides a Theme dataclass, built-in themes (``mckinsey``, ``deloitte``,
+``neutral``, ``ir``), a theme registry for lookup by name, and color
+utilities (tint/shade).
 """
 
 from __future__ import annotations
@@ -336,3 +337,77 @@ NEUTRAL = Theme(
     },
 )
 register_theme(NEUTRAL)
+
+
+# 日本の上場企業の IR (四半期決算) 資料向けプリセット。
+# クリーム色の背景 (#F8F9F5) とディープネイビー (#0A2540) を基調とし、
+# HD ワイド (20.0 x 11.25 インチ) で Yu Gothic を東アジア字形に固定する。
+IR = Theme(
+    name="ir",
+    colors={
+        "primary": "#0A2540",          # deep navy
+        "accent": "#1E3A8A",           # blue accent
+        "background": "#F8F9F5",       # cream
+        "text_primary": "#1A1A1A",
+        "text_secondary": "#6B7280",
+        "rule_strong": "#C0C0C0",
+        "rule_subtle": "#E0E0E0",
+        "highlight_row": "#F0F0F0",    # for data tables
+        "positive": "#059669",         # green for +% figures
+        "negative": "#DC2626",
+    },
+    fonts={
+        "title": "Arial",
+        "body": "Arial",
+        # 明示的に east-asian typeface を指定し、非 JP Windows での中国語
+        # フォントへの自動 fallback を防ぐ (issue #40)。
+        "east_asian": "Yu Gothic",
+    },
+    sizes={
+        "title": 28,
+        "subtitle": 14,
+        "body": 11,
+        "table": 10,
+        "caption": 9,
+        "footnote": 8,
+    },
+    slide={
+        "width": 20.0,   # HD widescreen (IR spec)
+        "height": 11.25,
+    },
+    margins={
+        "left": 1.0,
+        "right": 1.0,
+        "top": 0.6,
+    },
+    layout={
+        "title_top": 0.6,
+        "title_height": 0.8,
+        "divider_top": 1.7,
+        "body_top": 1.85,
+        "footer_top": 10.3,
+    },
+    table={
+        "header_bg": "background",
+        "header_fg": "text_primary",
+        "alt_row_bg": "highlight_row",
+        "border_color": "rule_subtle",
+        "no_vertical_borders": True,
+        "row_height": 0.5,
+        "border_width": 0.5,
+    },
+    chart_colors=[
+        "#1E3A8A",  # primary navy
+        "#3B82F6",  # lighter blue
+        "#059669",  # green
+        "#DC2626",  # red
+        "#6B7280",  # gray
+        "#C0C0C0",  # rule gray
+    ],
+    connector={
+        "color": "rule_strong",
+        "width": 1.0,
+        "arrow_end": "none",
+    },
+)
+register_theme(IR)
