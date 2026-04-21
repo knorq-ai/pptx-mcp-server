@@ -480,8 +480,9 @@ def add_milestone_timeline(
         phase_band_height=phase_band_height,
     )
 
-    # フェーズ帯の下端 = マイルストーン・ルールの上端。
-    rule_top = top + phase_band_height
+    # ルールは caller-declared chart area の上端 (chart_top) から下に引く。
+    # 旧実装は `top + phase_band_height` を使って chart_top 引数を無視していた (#119)。
+    rule_top = chart_top
 
     phase_rule_shapes = _render_phase_rules(
         slide,

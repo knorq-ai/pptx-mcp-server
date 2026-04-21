@@ -137,7 +137,8 @@ choice, etc.) — that belongs in the calling agent's system prompt.
 
 ## Available Themes
 Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
-Available: `mckinsey` (default), `deloitte`, `neutral`. For custom palettes
+Available: `mckinsey` (default), `deloitte`, `neutral`, `ir` (Japanese IR /
+quarterly-report palette — cream + navy, HD 20"×11.25"). For custom palettes
 pass explicit `font_color` / `fill_color` hex values on elements instead.
 
 ## Response Shape (v0.3.0)
@@ -981,6 +982,12 @@ def pptx_add_data_table(
             font_name=font_name,
         )
 
+        # Envelope invariant: result must have 'message' (#120).
+        result["message"] = (
+            f"Added data table ({len(rows)} rows × {len(columns)} cols, "
+            f"consumed {result['consumed_height']:.2f}\")"
+        )
+
         # save 前に return 値構築が終わっているため、以降の save 失敗で
         # 中途半端な状態にならない (#34 と同じポリシー)。
         save_pptx(prs, file_path)
@@ -1097,6 +1104,12 @@ def pptx_add_milestone_timeline(
             milestone_font_size_pt=milestone_font_size_pt,
             milestone_year_font_size_pt=milestone_year_font_size_pt,
             theme=theme,
+        )
+
+        # Envelope invariant: result must have 'message' (#120).
+        result["message"] = (
+            f"Added milestone timeline "
+            f"({len(phases)} phases, {len(milestones)} milestones)"
         )
 
         save_pptx(prs, file_path)

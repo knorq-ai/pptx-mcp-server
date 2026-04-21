@@ -174,6 +174,11 @@ def add_data_table(
             ErrorCode.INVALID_PARAMETER,
             "width, row_height, header_height must all be > 0",
         )
+    if rule_thickness < 0:
+        raise EngineError(
+            ErrorCode.INVALID_PARAMETER,
+            f"rule_thickness must be >= 0; got {rule_thickness:.3f}",
+        )
 
     n_cols = len(columns)
     for ri, row in enumerate(rows):
