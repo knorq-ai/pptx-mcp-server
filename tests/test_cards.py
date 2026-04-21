@@ -709,3 +709,40 @@ class TestCardSpecBorder:
             min_card_height=1.0,
         )
         assert "INVALID_PARAMETER" in out or "unknown" in out
+
+
+# ---------------------------------------------------------------------------
+# #124: theme-aware card rendering
+# ---------------------------------------------------------------------------
+
+
+def test_card_colors_resolve_ir_theme_tokens(one_slide_prs):
+    """CardSpec fill_color='highlight_row' + theme='ir' → resolves to theme's color."""
+    slide = one_slide_prs.slides[0]
+    cards = [CardSpec(
+        title="Test",
+        body="...",
+        fill_color="highlight_row",  # theme token
+        title_color="primary",       # theme token
+    )]
+    placements, consumed = add_responsive_card_row(
+        slide, cards,
+        left=0.5, top=1.0, width=4.0, max_height=2.0,
+        theme="ir",
+    )
+    # Find the background rectangle (first shape of the card)
+    # Card placements: 1 card, so first shape is its bg rectangle
+    bg = slide.shapes[0]
+    assert str(bg.fill.fore_color.rgb) == "F0F0F0"  # IR highlight_row
+
+
+def test_card_raw_hex_passthrough_without_theme(one_slide_prs):
+    """Raw hex passes through when theme=None (regression)."""
+    slide = one_slide_prs.slides[0]
+    cards = [CardSpec(title="Test", fill_color="ABCDEF")]
+    placements, _ = add_responsive_card_row(
+        slide, cards,
+        left=0.5, top=1.0, width=4.0, max_height=2.0,
+    )
+    bg = slide.shapes[0]
+    assert str(bg.fill.fore_color.rgb) == "ABCDEF"

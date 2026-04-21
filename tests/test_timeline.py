@@ -243,3 +243,54 @@ def test_milestone_rules_anchor_at_chart_top(one_slide_prs: Presentation) -> Non
         assert abs(y_in - 3.0) < 0.01, (
             f"Milestone rule top={y_in:.3f}, expected 3.0 (chart_top)"
         )
+
+
+# ---------------------------------------------------------------------------
+# #125: theme-aware rendering
+# ---------------------------------------------------------------------------
+
+
+def test_phase_rule_color_resolves_ir_theme_token(one_slide_prs):
+    """phase_rule_color="rule_subtle" with theme="ir" → resolves to theme's value (#125)."""
+    from pptx_mcp_server.engine.timeline import add_milestone_timeline, TimelinePhase
+    slide = one_slide_prs.slides[0]
+    result = add_milestone_timeline(
+        slide,
+        phases=[
+            TimelinePhase(label="A", index_label="01", year_range="2012-2016"),
+            TimelinePhase(label="B", index_label="02", year_range="2017-2021"),
+        ],
+        milestones=[],
+        left=1.0, top=1.0, width=10.0,
+        phase_band_height=0.5,
+        chart_top=2.0, chart_bottom=5.0,
+        phase_rule_color="rule_subtle",  # theme token, not hex
+        theme="ir",
+    )
+    # One phase boundary rule between A and B
+    phase_rules = [r for r in result["rule_shapes"] if r.get("kind") == "phase_rule"]
+    assert phase_rules, "expected phase boundary rule"
+    shape = slide.shapes[phase_rules[0]["shape_index"]]
+    rgb = shape.fill.fore_color.rgb
+    # IR theme's rule_subtle = #E0E0E0
+    assert str(rgb) == "E0E0E0"
+
+
+def test_milestone_primary_style_uses_theme_primary_color_on_label(one_slide_prs):
+    """style='primary' with theme='ir' → label text color = ir theme primary (#125)."""
+    from pptx_mcp_server.engine.timeline import add_milestone_timeline, TimelineMilestone
+    slide = one_slide_prs.slides[0]
+    result = add_milestone_timeline(
+        slide,
+        phases=[],
+        milestones=[TimelineMilestone(x_pos=0.5, year="2020", label="Test", style="primary")],
+        left=1.0, top=1.0, width=10.0,
+        phase_band_height=0.5,
+        chart_top=2.0, chart_bottom=5.0,
+        theme="ir",
+    )
+    label_info = result["milestone_shapes"][0]
+    label = slide.shapes[label_info["shape_index"]]
+    run = label.text_frame.paragraphs[0].runs[0]
+    # IR theme primary = #0A2540
+    assert str(run.font.color.rgb) == "0A2540"

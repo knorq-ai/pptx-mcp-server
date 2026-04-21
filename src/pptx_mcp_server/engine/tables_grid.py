@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from .pptx_io import EngineError, ErrorCode
 from .shapes import _add_shape, add_auto_fit_textbox
+from ..theme import resolve_theme_color
 
 
 # ヘアライン罫線の既定厚 (inches)。< 0.02" は PowerPoint / LibreOffice の
@@ -122,6 +123,7 @@ def add_data_table(
     rule_thickness: float = _HAIRLINE_THICKNESS,
     header_rule: bool = True,
     font_name: str = "Arial",
+    theme: str | None = None,
 ) -> dict:
     """行 × 列の grid として ``rows`` を描画する.
 
@@ -151,6 +153,9 @@ def add_data_table(
         rule_thickness: 罫線の太さ (inches)。既定 0.01" はヘアライン相当。
         header_rule: ヘッダーとデータ行の間に罫線を引くか。
         font_name: セルのフォント名。
+        theme: theme 名 (``"mckinsey"``, ``"ir"`` など)。色引数に theme
+            トークン (例: ``"highlight_row"``, ``"rule_subtle"``) が渡された
+            場合の解決に使う。``None`` なら hex passthrough のみ (#123)。
 
     Returns:
         dict: ``{"consumed_height": float, "header_y_bottom": float,
@@ -179,6 +184,15 @@ def add_data_table(
             ErrorCode.INVALID_PARAMETER,
             f"rule_thickness must be >= 0; got {rule_thickness:.3f}",
         )
+
+    # theme トークン → 6-hex 解決 (#123)。None や空文字はそのまま通す。
+    alt_row_color = resolve_theme_color(alt_row_color, theme) or None if alt_row_color else alt_row_color
+    highlight_color = resolve_theme_color(highlight_color, theme)
+    rule_color = resolve_theme_color(rule_color, theme) or None if rule_color else rule_color
+    # per-column colors (header_color, value_color) もテーマ解決する。
+    for c in columns:
+        c.header_color = resolve_theme_color(c.header_color, theme)
+        c.value_color = resolve_theme_color(c.value_color, theme)
 
     n_cols = len(columns)
     for ri, row in enumerate(rows):

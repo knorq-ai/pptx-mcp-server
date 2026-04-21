@@ -112,6 +112,41 @@ def get_chart_color(theme: Theme, series_index: int) -> str:
     return "#2251FF"
 
 
+def resolve_theme_color(
+    token_or_hex: str,
+    theme_name: Optional[str] = None,
+) -> str:
+    """theme トークン / hex を primitive が期待する 6-hex (no ``#`` prefix) に解決する.
+
+    Primitive 向けの thin wrapper。``theme_name`` が指定されていればテーマの
+    ``colors`` を先に参照し、一致しなければ入力を hex として扱う。戻り値は
+    `_parse_color` の期待に合わせて先頭の ``#`` を必ず除く。
+
+    - ``resolve_theme_color("primary", "mckinsey")`` → ``"051C2C"``
+    - ``resolve_theme_color("#051C2C")`` → ``"051C2C"``
+    - ``resolve_theme_color("051C2C")`` → ``"051C2C"`` (passthrough)
+    - ``resolve_theme_color("", "ir")`` → ``""`` (empty for "disable")
+
+    Args:
+        token_or_hex: theme token (e.g. ``"primary"``) or raw hex. Empty
+            string is returned as-is (callers use ``""`` to mean "disable").
+        theme_name: theme registry key (e.g. ``"mckinsey"``); if ``None`` or
+            unregistered, only hex passthrough happens.
+
+    Returns:
+        6-hex string without ``#`` prefix, or the empty string if input was
+        empty.
+    """
+    if not token_or_hex:
+        return ""
+    if theme_name:
+        theme = get_theme(theme_name)
+        if theme is not None:
+            resolved = resolve_color(theme, token_or_hex)
+            return resolved.lstrip("#")
+    return token_or_hex.lstrip("#")
+
+
 # ---------------------------------------------------------------------------
 # Built-in themes
 # ---------------------------------------------------------------------------

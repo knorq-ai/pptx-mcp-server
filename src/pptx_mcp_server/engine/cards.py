@@ -22,9 +22,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+from ..theme import resolve_theme_color
 from ._validate import validate_card_row_geometry
 from .layout_constants import (
     TEXTBOX_INNER_PADDING_PER_SIDE as _AUTO_FIT_PADDING_PER_SIDE,
@@ -338,6 +339,7 @@ def add_responsive_card_row(
     gap: float = 0.2,
     height_mode: CardHeightMode = "max",
     min_card_height: float = 1.0,
+    theme: str | None = None,
 ) -> tuple[list[CardPlacement], float]:
     """N 枚のカードを横並びで配置する.
 
@@ -400,6 +402,22 @@ def add_responsive_card_row(
     n = len(cards)
     if n == 0:
         return [], 0.0
+
+    # theme トークン → 6-hex を各カードで解決する (#124)。呼び出し元の
+    # CardSpec は不変のまま (dataclasses.replace でコピー)。theme 引数が
+    # None の場合でも raw hex の `#` 剥離は走る (冪等な no-op)。
+    cards = [
+        replace(
+            c,
+            fill_color=resolve_theme_color(c.fill_color, theme),
+            accent_color=resolve_theme_color(c.accent_color, theme),
+            border_color=resolve_theme_color(c.border_color, theme),
+            title_color=resolve_theme_color(c.title_color, theme),
+            body_color=resolve_theme_color(c.body_color, theme),
+            label_color=resolve_theme_color(c.label_color, theme),
+        )
+        for c in cards
+    ]
 
     # 各カードの幅を計算する (呼び出し元の CardSpec には書き戻さない)
     effective_gap = gap if n > 1 else 0.0
