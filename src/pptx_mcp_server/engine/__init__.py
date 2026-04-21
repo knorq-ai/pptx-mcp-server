@@ -106,6 +106,10 @@ from .cards import (
     CardPlacement,
     add_responsive_card_row,
 )
+from .tables_grid import (
+    TableColumnSpec,
+    add_data_table,
+)
 
 __all__ = [
     # Layout constants
@@ -142,6 +146,8 @@ __all__ = [
     "FlexItem", "add_flex_container", "add_flex_container_file",
     # Cards
     "CardSpec", "CardHeightMode", "CardPlacement", "add_responsive_card_row",
+    # Data tables (textbox grid)
+    "TableColumnSpec", "add_data_table",
     # Rendering
     "render_slide", "render_slide_to_path",
 ]

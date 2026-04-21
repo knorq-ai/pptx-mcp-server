@@ -106,6 +106,8 @@ from .engine import (
     check_deck_extended,
     CardSpec,
     add_responsive_card_row,
+    TableColumnSpec,
+    add_data_table,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -859,6 +861,128 @@ def pptx_add_responsive_card_row(
 
         render_info = _auto_render(file_path, slide_index)
         # result は既に richer dict — auto-render の結果を同じ dict にマージ。
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_data_table(
+    file_path: str,
+    slide_index: int,
+    rows: List[List[Any]],
+    columns: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    row_height: float = 0.35,
+    header_height: float = 0.4,
+    alt_row_color: Optional[str] = None,
+    highlight_row_index: Optional[int] = None,
+    highlight_color: str = "F0F0F0",
+    rule_color: Optional[str] = "E0E0E0",
+    rule_thickness: float = 0.01,
+    header_rule: bool = True,
+    font_name: str = "Arial",
+) -> str:
+    """Add a financial/dense data table rendered as a textbox grid (NOT python-pptx Table).
+
+    For IR / consulting decks where python-pptx's ``Table`` object is too
+    opinionated (default borders, rigid alignment). Lays out each cell as an
+    individual textbox, with optional alt-row shading, highlight row, and
+    hairline horizontal rules.
+
+    ``rows``: list of rows; each row is a list of values (``str``/``int``/
+    ``float``/``None``, stringified via ``str()``). Length must match
+    ``len(columns)``.
+
+    ``columns``: list of column spec dicts with keys (all optional except ``header``):
+      - ``header`` (str, required): column header text
+      - ``align`` ("left" | "center" | "right", default "left")
+      - ``width`` (float, default 1.5): relative column width — auto-scaled to total ``width``
+      - ``font_size_pt`` (float, default 10)
+      - ``header_bold`` (bool, default True)
+      - ``header_font_size_pt`` (float, default 10)
+      - ``value_color`` (hex, default "333333")
+      - ``header_color`` (hex, default "6B7280")
+
+    Column widths are proportionally scaled so their sum matches ``width``.
+
+    Returns: ``{"consumed_height": float, "header_y_bottom": float, "shape_count": int}``.
+    """
+    try:
+        if not isinstance(rows, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "rows must be a list of lists.",
+                parameter="rows",
+                hint="Pass e.g. [[\"AAPL\", 189.2], [\"MSFT\", 412.0]].",
+                issue=110,
+            )
+        if not isinstance(columns, list) or not columns:
+            return _error(
+                "INVALID_PARAMETER",
+                "columns must be a non-empty list of dicts.",
+                parameter="columns",
+                hint="Pass e.g. [{\"header\":\"Ticker\"},{\"header\":\"Price\",\"align\":\"right\"}].",
+                issue=110,
+            )
+
+        # ColumnSpec 未知キーは strict rejection (cards.py と同じポリシー)。
+        _col_known_keys = {f.name for f in fields(TableColumnSpec)}
+        for i, spec in enumerate(columns):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"columns[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            if "header" not in spec:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"columns[{i}]: missing required key 'header'.",
+                )
+            unknown = set(spec.keys()) - _col_known_keys
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"columns[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_col_known_keys)}."
+                    ),
+                )
+
+        column_objs = [TableColumnSpec(**d) for d in columns]
+
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_data_table(
+            slide,
+            rows,
+            column_objs,
+            left=left,
+            top=top,
+            width=width,
+            row_height=row_height,
+            header_height=header_height,
+            alt_row_color=alt_row_color,
+            highlight_row_index=highlight_row_index,
+            highlight_color=highlight_color,
+            rule_color=rule_color,
+            rule_thickness=rule_thickness,
+            header_rule=header_rule,
+            font_name=font_name,
+        )
+
+        # save 前に return 値構築が終わっているため、以降の save 失敗で
+        # 中途半端な状態にならない (#34 と同じポリシー)。
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
         if render_info.get("rendered"):
             result["preview_path"] = render_info.get("preview_path")
         elif render_info.get("reason") != "disabled":
