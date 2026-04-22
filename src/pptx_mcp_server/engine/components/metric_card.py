@@ -134,6 +134,7 @@ def add_metric_card(
     width: float,
     height: float,
     theme: str | None = None,
+    container_name: str = "metric_card",
 ) -> dict:
     """Render a single metric card inside ``(left, top, width, height)``.
 
@@ -142,8 +143,8 @@ def add_metric_card(
 
     Returns:
         Dict with the rendered bounds and each child shape:
-        ``{"bounds": {...}, "label_shape", "title_shape", "chart_shape",
-        "metric_shapes": [(label_shape, value_shape), ...]}``.
+        ``{"bounds": {...}, "frame_shape", "label_shape", "title_shape",
+        "chart_shape", "metric_shapes": [(label_shape, value_shape), ...]}``.
 
     Raises:
         EngineError: ``INVALID_PARAMETER`` when the inner height is too
@@ -152,6 +153,17 @@ def add_metric_card(
     # Deferred imports to avoid circular import with ``engine.shapes``
     # (which imports ``components.container``).
     from ..shapes import _add_image, _add_shape, add_auto_fit_textbox
+
+    # Validate optional chart image path up front so a missing file fails
+    # before any shapes are appended (avoids partial-card leaks on error).
+    if spec.chart_image_path is not None:
+        import os
+
+        if not os.path.isfile(spec.chart_image_path):
+            raise EngineError(
+                ErrorCode.INVALID_PARAMETER,
+                f"MetricCard chart_image_path does not exist: {spec.chart_image_path!r}",
+            )
 
     # Resolve colors once at entry. Raw hex / theme tokens both normalize
     # to 6-hex (no ``#``) so downstream primitives receive uniform input.
@@ -191,7 +203,7 @@ def add_metric_card(
 
     with begin_container(
         slide,
-        name="metric_card",
+        name=container_name,
         left=float(left),
         top=float(top),
         width=float(width),
@@ -209,8 +221,6 @@ def add_metric_card(
             line_color=border_color,
             line_width=float(spec.border_width),
         )
-        # Note: the frame shape is not returned explicitly — the validator
-        # sees it via container registration.
 
         # 2) Inner layout cursor.
         inner_left = float(left) + pad
@@ -305,7 +315,7 @@ def add_metric_card(
                     width=cell_w,
                     height=_METRIC_VALUE_CELL_H,
                     font_size_pt=float(spec.metric_value_size_pt),
-                    min_size_pt=max(float(spec.metric_value_size_pt) - 6, 10),
+                    min_size_pt=max(float(spec.metric_value_size_pt) - 12, 10),
                     bold=True,
                     color_hex=metric_value_color,
                     align="left",
@@ -373,6 +383,7 @@ def add_metric_card_row(
             width=card_w,
             height=height,
             theme=theme,
+            container_name=f"metric_card_{i}",
         )
         placements.append(result["bounds"])
 

@@ -275,6 +275,19 @@ def test_theme_ir_resolves_palette(one_slide_prs):
 
 
 # ---------------------------------------------------------------------------
+# 9a. Missing chart_image_path raises before any shapes are added
+# ---------------------------------------------------------------------------
+
+
+def test_missing_chart_image_path_raises_before_shapes_added(slide):
+    spec = MetricCardSpec(title="X", chart_image_path="/nonexistent.png")
+    n_before = len(slide.shapes)
+    with pytest.raises(EngineError, match="does not exist"):
+        add_metric_card(slide, spec, left=1, top=1, width=5, height=5)
+    assert len(slide.shapes) == n_before  # no partial shapes leaked
+
+
+# ---------------------------------------------------------------------------
 # 9. check_containment returns no findings for properly-sized card
 # ---------------------------------------------------------------------------
 
