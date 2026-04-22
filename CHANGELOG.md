@@ -2,6 +2,61 @@
 
 All notable changes to `pptx-mcp-server` are documented in this file.
 
+## Unreleased / v0.6.0 — KPIRow block component (Issue #133)
+
+Second piece of the v0.6.0 shadcn-for-PPTX component layer: a proper
+block-component KPI row that composes atomic primitives inside a
+container, replacing the v0.2.x simple-callout variant at the canonical
+`pptx_add_kpi_row` name.
+
+### Added
+
+- **`pptx_add_kpi_row` MCP tool (block-component variant)** — new
+  label / big-value / optional-detail layout. Each cell stacks a 9pt
+  label, a 26pt bold single-line auto-fit value, and an optional 8pt
+  detail line. Cells are evenly distributed across `width` with `gap`
+  inches between them. Supports optional `card_fill` / `card_border`
+  frames (e.g. `card_fill="highlight_row"`, `card_border="rule_subtle"`)
+  and a `theme` kwarg for theme-token resolution. Auto-tags child shapes
+  into the active container for containment validation.
+- **`engine.components.kpi_row.KPISpec`** — dataclass spec for a single
+  cell (`label`, `value`, `detail`, `value_color`, `delta_color`
+  (reserved for forward-compat)).
+- **`add_kpi_row_block` engine export** — new alias in
+  `pptx_mcp_server.engine.components`. The underlying function is
+  `engine.components.kpi_row.add_kpi_row`; it is re-exported under the
+  `add_kpi_row_block` name to avoid a name collision with the legacy
+  `engine.composites.add_kpi_row` (still exported unchanged).
+
+### Changed (breaking — MCP surface)
+
+- **Legacy `pptx_add_kpi_row` MCP tool renamed to
+  `pptx_add_kpi_row_legacy`** — callers of the 4-arg signature
+  `(file_path, slide_index, kpis, y)` will fail against the new 7+ arg
+  schema that now owns the canonical name. **The legacy tool is
+  deprecated and will be removed in v0.7.0.** New callers should migrate
+  to the block-component `pptx_add_kpi_row`.
+
+### Migration
+
+```python
+# Before (v0.5.x legacy):
+pptx_add_kpi_row(file_path, slide_index, kpis=[...], y=2.5)
+
+# After (v0.6.0, block component):
+pptx_add_kpi_row(file_path, slide_index, kpis=[...], left=0.5, top=2.5, width=12.0)
+
+# Or, to keep the old behavior unchanged for now (removed in v0.7.0):
+pptx_add_kpi_row_legacy(file_path, slide_index, kpis=[...], y=2.5)
+```
+
+### Non-breaking
+
+- `engine.composites.add_kpi_row` (library-level) is unchanged; only the
+  MCP tool name moved.
+- The legacy tool's runtime behavior is identical — the rename is
+  surface-only so migration is a one-line rename, not a refactor.
+
 ## Unreleased — container primitive (Issue #130)
 
 Foundation for the v0.6.0 shadcn-for-PPTX component layer.

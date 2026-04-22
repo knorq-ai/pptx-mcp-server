@@ -25,6 +25,11 @@ from .numbered_list import (
     NumberedItem,
     add_numbered_list,
 )
+from .kpi_row import (
+    KPISpec,
+    # Aliased to avoid collision with legacy `engine.composites.add_kpi_row`.
+    add_kpi_row as add_kpi_row_block,
+)
 
 __all__ = [
     "ContainerBounds",
@@ -38,4 +43,6 @@ __all__ = [
     "add_section_header",
     "NumberedItem",
     "add_numbered_list",
+    "KPISpec",
+    "add_kpi_row_block",
 ]
