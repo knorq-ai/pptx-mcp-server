@@ -20,7 +20,34 @@ from .pptx_io import (
 )
 from .text_metrics import estimate_text_height, estimate_text_width, wrap_text
 
-from ..theme import Theme, resolve_color
+from ..theme import Theme, resolve_color, resolve_theme_color
+
+
+def _resolve_color_by_theme(color, theme):
+    """色トークン / hex を ``theme`` が str か Theme オブジェクトかで分岐解決する.
+
+    #131: v0.5.0 のブロック primitives は ``theme`` を文字列名 (e.g. ``"ir"``)
+    で受け取り ``resolve_theme_color`` 経由で解決する。一方で composites.py 等
+    の旧コールサイトは ``Theme`` オブジェクトを直接渡し ``resolve_color``
+    (string → hex マップ参照) に頼っている。atomic primitives はどちらも
+    受け付けられる必要があるため、この薄いヘルパーで runtime dispatch する。
+
+    - ``theme`` が ``str`` → ``resolve_theme_color(color, theme)`` で 6-hex
+      (no ``#`` prefix) を返す。
+    - ``theme`` が ``Theme`` → 既存の ``resolve_color(theme, color)`` と同じ
+      挙動を保ち、先頭の ``#`` も保持する (下流 ``_parse_color`` は両方扱える)。
+    - それ以外 (``None`` 等) → 入力をそのまま返す。
+
+    ``color`` が falsy なら空文字 / None をそのまま返し、defensive guard を
+    追加しない (呼び出し側は既に ``if color:`` でガードしている)。
+    """
+    if not color:
+        return color
+    if isinstance(theme, str):
+        return resolve_theme_color(color, theme)
+    if isinstance(theme, Theme):
+        return resolve_color(theme, color)
+    return color
 
 # DrawingML 名前空間 (OOXML 直接操作用)。
 _A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -105,7 +132,7 @@ def _apply_font(
     if font_size is not None:
         font.size = Pt(font_size)
     if font_color is not None:
-        color_hex = resolve_color(theme, font_color) if theme else font_color
+        color_hex = _resolve_color_by_theme(font_color, theme) if theme else font_color
         font.color.rgb = _parse_color(color_hex)
     if bold is not None:
         font.bold = bold
@@ -123,7 +150,7 @@ def _apply_font(
         if font_size is not None:
             rfont.size = Pt(font_size)
         if font_color is not None:
-            color_hex = resolve_color(theme, font_color) if theme else font_color
+            color_hex = _resolve_color_by_theme(font_color, theme) if theme else font_color
             rfont.color.rgb = _parse_color(color_hex)
         if bold is not None:
             rfont.bold = bold
@@ -175,12 +202,17 @@ def _add_textbox(
     ``vertical_anchor`` は python-pptx の ``tf.vertical_anchor`` 経由で設定
     する (issue #41)。直接 ``bodyPr.set("anchor", ...)`` を呼ぶと round-trip
     で属性が重複する危険があるため、lxml 直接操作はしない。
+
+    ``theme`` は ``str`` (テーマ名) / ``Theme`` オブジェクトの双方を受け付け
+    る (#131)。``str`` の場合は ``font_color`` のみ ``resolve_theme_color``
+    経由で解決し、``Theme`` オブジェクトの場合は既存挙動 (body/east_asian
+    font のフォールバック + ``resolve_color``) を保つ。
     """
-    if theme:
+    if isinstance(theme, Theme):
         font_name = font_name or theme.fonts.get("body")
         east_asian_font = east_asian_font or theme.fonts.get("east_asian")
-        if font_color:
-            font_color = resolve_color(theme, font_color)
+    if theme and font_color:
+        font_color = _resolve_color_by_theme(font_color, theme)
 
     txBox = slide.shapes.add_textbox(
         Inches(left), Inches(top), Inches(width), Inches(height),
@@ -243,15 +275,25 @@ def _add_shape(
     alignment=None,
     theme=None,
 ):
-    """In-memory: add an auto shape to a slide. Returns shape_index."""
-    if theme:
+    """In-memory: add an auto shape to a slide. Returns shape_index.
+
+    ``theme`` は 2 形態を受け付ける (#131):
+      - ``str`` (e.g. ``"ir"``): ``resolve_theme_color`` 経由で色トークンを
+        6-hex に解決する (v0.5.0 primitives と同じ契約)。
+      - ``Theme`` object: 旧コールサイト互換。``resolve_color`` + ``theme.fonts``
+        参照で解決する。
+    ``None`` (既定) の場合は色はそのまま下流に渡され、既存挙動を保つ。
+    """
+    if isinstance(theme, Theme):
+        # Theme オブジェクト経路: v0.5.0 以前の composites.py 互換。
         font_name = font_name or theme.fonts.get("body")
+    if theme:
         if fill_color:
-            fill_color = resolve_color(theme, fill_color)
+            fill_color = _resolve_color_by_theme(fill_color, theme)
         if line_color:
-            line_color = resolve_color(theme, line_color)
+            line_color = _resolve_color_by_theme(line_color, theme)
         if font_color:
-            font_color = resolve_color(theme, font_color)
+            font_color = _resolve_color_by_theme(font_color, theme)
 
     shape_enum = _SHAPE_MAP.get(shape_type.lower())
     if shape_enum is None:
@@ -451,14 +493,20 @@ def add_shape(
     font_color=None,
     bold=None,
     alignment=None,
+    theme=None,
 ):
-    """File-based wrapper: add an auto shape to a slide."""
+    """File-based wrapper: add an auto shape to a slide.
+
+    ``theme`` は ``str`` (テーマ名) を受け付け、``_add_shape`` に透過する
+    (#131)。``None`` (既定) なら v0.5.1 挙動を保つ。
+    """
     prs = open_pptx(file_path)
     slide = _get_slide(prs, slide_index)
     idx = _add_shape(
         slide, shape_type, left, top, width, height,
         fill_color, line_color, line_width, no_line,
         text, font_name, font_size, font_color, bold, alignment,
+        theme=theme,
     )
     save_pptx(prs, file_path)
     return f"Added {shape_type} [{idx}] on slide [{slide_index}]"
@@ -772,6 +820,7 @@ def add_auto_fit_textbox(
     truncate_with_ellipsis: bool = True,
     east_asian_font: str | None = None,
     wrap: bool = True,
+    theme: str | None = None,
 ) -> tuple[object, float]:
     """指定 box に収まる最大 font size でテキストを描画する.
 
@@ -813,6 +862,9 @@ def add_auto_fit_textbox(
         wrap: True なら高さベースで auto-fit し折り返しを許容する。False なら
             幅ベースで auto-fit し単一行を維持する (``word_wrap=False`` を
             textbox に適用)。既定は後方互換のため True。
+        theme: テーマ名 (e.g. ``"ir"``、``"mckinsey"``)。指定時は ``color_hex``
+            を ``resolve_theme_color`` 経由で 6-hex に解決する (#131)。``None``
+            (既定) なら v0.5.1 の挙動を byte-for-byte 保つ。
 
     Returns:
         ``(shape, actual_font_size)`` のタプル。テスト・デバッグ用途。
@@ -829,6 +881,11 @@ def add_auto_fit_textbox(
         font_size_pt=font_size_pt,
         min_size_pt=min_size_pt,
     )
+
+    # #131: theme トークン → 6-hex を entry で一度だけ解決する。``theme=None``
+    # の場合でも ``resolve_theme_color`` は raw hex の ``#`` を剥離するだけの
+    # 冪等 no-op として振る舞う (v0.5.1 の color_hex="#FF0000" 経路と互換)。
+    color_hex = resolve_theme_color(color_hex, theme)
 
     usable_width = max(width - 2 * _AUTO_FIT_PADDING, 0.01)
 
@@ -896,8 +953,12 @@ def add_auto_fit_textbox_file(
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
     wrap: bool = True,
+    theme: str | None = None,
 ) -> dict:
     """File-based wrapper: 指定 box に収まるよう自動縮小する textbox を追加する.
+
+    ``theme`` は ``add_auto_fit_textbox`` に透過する (#131)。``None`` 既定
+    で v0.5.1 挙動を保つ。
 
     Returns:
         ``{"shape_index": int, "slide_index": int, "actual_font_size": float}``
@@ -921,6 +982,7 @@ def add_auto_fit_textbox_file(
         vertical_anchor=vertical_anchor,
         truncate_with_ellipsis=truncate_with_ellipsis,
         wrap=wrap,
+        theme=theme,
     )
     save_pptx(prs, file_path)
     return {
