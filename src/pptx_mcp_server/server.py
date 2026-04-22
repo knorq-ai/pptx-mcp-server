@@ -111,6 +111,10 @@ from .engine import (
     TimelinePhase,
     TimelineMilestone,
     add_milestone_timeline,
+    PageMarkerSpec,
+    SlideFooterSpec,
+    add_page_marker,
+    add_slide_footer,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -1128,6 +1132,84 @@ def pptx_add_milestone_timeline(
         elif render_info.get("reason") != "disabled":
             result["render_warning"] = render_info
         return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+# --- Markers (page marker / slide footer) -------------------------
+
+@mcp.tool()
+def pptx_add_page_marker(
+    file_path: str,
+    slide_index: int,
+    section: str,
+    page: str,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a top-right page marker (section line + page line) to a slide.
+
+    Uses fixed conventional position (right margin 0.5", top 0.35"),
+    two right-aligned single-line textboxes stacked vertically.
+    ``theme`` resolves the default ``text_secondary`` color token when set
+    (e.g. ``theme="ir"``).
+
+    Returns ``{"bounds": {"left","top","width","height"}}``.
+    """
+    try:
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+        sw = prs.slide_width / 914400
+        sh = prs.slide_height / 914400
+        spec = PageMarkerSpec(section=section, page=page)
+        result = add_page_marker(
+            slide, spec,
+            slide_width=sw, slide_height=sh,
+            theme=theme,
+        )
+        save_pptx(prs, file_path)
+        return _success({
+            "message": f"Added page marker to slide {slide_index}",
+            "bounds": result["bounds"],
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_slide_footer(
+    file_path: str,
+    slide_index: int,
+    left_text: str = "IR Presentation · FY Q3",
+    right_text: Optional[str] = None,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a bottom-of-slide footer (left + optional right textboxes).
+
+    Uses fixed conventional position (bottom offset 0.4", side margin 0.5").
+    If ``right_text`` is ``None`` or empty, only the left textbox is drawn.
+    ``theme`` resolves the default ``text_secondary`` color token when set.
+
+    Returns ``{"bounds": {"left","top","width","height"}}``.
+    """
+    try:
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+        sw = prs.slide_width / 914400
+        sh = prs.slide_height / 914400
+        spec = SlideFooterSpec(
+            left_text=left_text,
+            right_text=right_text or "",
+        )
+        result = add_slide_footer(
+            slide, spec,
+            slide_width=sw, slide_height=sh,
+            theme=theme,
+        )
+        save_pptx(prs, file_path)
+        return _success({
+            "message": f"Added slide footer to slide {slide_index}",
+            "bounds": result["bounds"],
+        })
     except Exception as e:
         return _err(e)
 

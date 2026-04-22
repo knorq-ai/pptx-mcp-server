@@ -11,9 +11,19 @@ from .container import (
     begin_container,
     clear_slide_containers,
 )
+from .markers import (
+    PageMarkerSpec,
+    SlideFooterSpec,
+    add_page_marker,
+    add_slide_footer,
+)
 
 __all__ = [
     "ContainerBounds",
     "begin_container",
     "clear_slide_containers",
+    "PageMarkerSpec",
+    "SlideFooterSpec",
+    "add_page_marker",
+    "add_slide_footer",
 ]
