@@ -1364,63 +1364,75 @@ def check_containment(
       境界を逸脱しつつ outer には収まる shape は inner 側でのみ検出される。
     - findings の ``slide_index`` は presentation.slides 中の 0-origin
       index。同一 slide オブジェクトが複数 index を持つ想定はしない。
+
+    **Consumed-on-use contract:** 各 slide の処理完了後、module-level の
+    ``_SLIDE_REGISTRY`` から当該 slide のエントリを ``clear_slide_containers``
+    で削除する。これにより long-running プロセス (MCP server など) で
+    ``list[ContainerBounds]`` がリークせず、また CPython が ``id()`` を
+    再利用しても新しい slide に古い bounds が混入しない。
+    呼び出し側の責務は: ``begin_container`` でコンテナを宣言 → 直後に
+    ``check_containment`` で検証、というペアを守ること。
     """
-    from .components.container import iter_slide_containers
+    from .components.container import clear_slide_containers, iter_slide_containers
 
     findings: List[ValidationFinding] = []
 
     for slide_index, slide in enumerate(presentation.slides):
         containers = list(iter_slide_containers(slide))
-        if not containers:
-            continue
-        for bounds in containers:
-            inner_left, inner_top, inner_right, inner_bottom = bounds.inner_bounds()
-            for child in bounds.children:
-                c_left = child.left
-                c_top = child.top
-                c_right = child.left + child.width
-                c_bottom = child.top + child.height
+        try:
+            for bounds in containers:
+                inner_left, inner_top, inner_right, inner_bottom = bounds.inner_bounds()
+                for child in bounds.children:
+                    c_left = child.left
+                    c_top = child.top
+                    c_right = child.left + child.width
+                    c_bottom = child.top + child.height
 
-                # オフセット量。正値は「外側にはみ出している距離 (inches)」。
-                dx_left = (inner_left - c_left)
-                dx_right = (c_right - inner_right)
-                dy_top = (inner_top - c_top)
-                dy_bottom = (c_bottom - inner_bottom)
+                    # オフセット量。正値は「外側にはみ出している距離 (inches)」。
+                    dx_left = (inner_left - c_left)
+                    dx_right = (c_right - inner_right)
+                    dy_top = (inner_top - c_top)
+                    dy_bottom = (c_bottom - inner_bottom)
 
-                overflow_parts: List[str] = []
-                if dx_left > tolerance:
-                    overflow_parts.append(f"left by {dx_left:.3f}\"")
-                if dx_right > tolerance:
-                    overflow_parts.append(f"right by {dx_right:.3f}\"")
-                if dy_top > tolerance:
-                    overflow_parts.append(f"top by {dy_top:.3f}\"")
-                if dy_bottom > tolerance:
-                    overflow_parts.append(f"bottom by {dy_bottom:.3f}\"")
+                    overflow_parts: List[str] = []
+                    if dx_left > tolerance:
+                        overflow_parts.append(f"left by {dx_left:.3f}\"")
+                    if dx_right > tolerance:
+                        overflow_parts.append(f"right by {dx_right:.3f}\"")
+                    if dy_top > tolerance:
+                        overflow_parts.append(f"top by {dy_top:.3f}\"")
+                    if dy_bottom > tolerance:
+                        overflow_parts.append(f"bottom by {dy_bottom:.3f}\"")
 
-                if not overflow_parts:
-                    continue
+                    if not overflow_parts:
+                        continue
 
-                shape_label = child.name or "<unnamed>"
-                overflow_desc = ", ".join(overflow_parts)
-                message = (
-                    f"shape '{shape_label}' exits container "
-                    f"'{bounds.name}' ({overflow_desc})"
-                )
-                suggested = (
-                    f"reposition or resize shape to fit within "
-                    f"[{inner_left:.2f}, {inner_top:.2f}, "
-                    f"{inner_right:.2f}, {inner_bottom:.2f}] (inches)"
-                )
-                findings.append(
-                    ValidationFinding(
-                        severity="error",
-                        slide_index=slide_index,
-                        shape_name=shape_label,
-                        category="shape_outside_container",
-                        message=message,
-                        suggested_fix=suggested,
+                    shape_label = child.name or "<unnamed>"
+                    overflow_desc = ", ".join(overflow_parts)
+                    message = (
+                        f"shape '{shape_label}' exits container "
+                        f"'{bounds.name}' ({overflow_desc})"
                     )
-                )
+                    suggested = (
+                        f"reposition or resize shape to fit within "
+                        f"[{inner_left:.2f}, {inner_top:.2f}, "
+                        f"{inner_right:.2f}, {inner_bottom:.2f}] (inches)"
+                    )
+                    findings.append(
+                        ValidationFinding(
+                            severity="error",
+                            slide_index=slide_index,
+                            shape_name=shape_label,
+                            category="shape_outside_container",
+                            message=message,
+                            suggested_fix=suggested,
+                        )
+                    )
+        finally:
+            # Consumed-on-use: drop the registry entry so long-running
+            # processes don't leak and id(slide) reuse can't bleed stale
+            # bounds into a freshly-loaded slide.
+            clear_slide_containers(slide)
 
     return findings
 
@@ -1565,12 +1577,16 @@ def check_deck_extended(
 
     # summary: ValidationFinding 由来 + legacy (overlaps / out_of_bounds) を集計する。
     # 詳細な severity mapping は docstring 参照。
-    errors = sum(
-        1 for f in overflow_errors + divider + containment if f.severity == "error"
-    )
+    # 注: containment は _place で by_slide に絞り込まれた後のリストから数えることで
+    #     out-of-range な finding が summary.errors だけに混入する不整合を防ぐ
+    #     (per-slide legacy keys `overlaps` / `out_of_bounds` と同じ扱い)。
+    errors = sum(1 for f in overflow_errors + divider if f.severity == "error")
     for slide_data in slides_out:
         errors += len(slide_data["overlaps"])
         errors += len(slide_data["out_of_bounds"])
+        errors += sum(
+            1 for f in slide_data["containment"] if f.get("severity") == "error"
+        )
     warnings_count = sum(1 for f in unreadable if f.severity == "warning")
     warnings_count += sum(1 for f in title_wrap if f.severity == "warning")
     warnings_count += sum(1 for f in font_missing if f.severity == "warning")

@@ -295,6 +295,91 @@ def test_no_container_active_is_noop(one_slide_prs):
     assert check_containment(one_slide_prs) == []
 
 
+def test_check_containment_consumes_registry_no_phantom_findings(
+    blank_prs,
+):
+    """Second build of the deck must not inherit stale container bounds.
+
+    Regression for the id(slide)-reuse + memory-leak hazard: check_containment
+    should clear its per-slide registry entries as it goes, so a later deck
+    built in the same process cannot receive phantom shape_outside_container
+    findings from a previous run.
+    """
+    from pptx_mcp_server.engine.components.container import (
+        _SLIDE_REGISTRY,
+        iter_slide_containers,
+    )
+
+    # --- First deck: overflow on purpose, validate, confirm cleanup. ---
+    layout = blank_prs.slide_layouts[6]
+    slide1 = blank_prs.slides.add_slide(layout)
+    with begin_container(
+        slide1, name="card",
+        left=1.0, top=1.0, width=3.0, height=2.0,
+    ):
+        _add_textbox(slide1, 1.2, 2.8, 2.6, 0.5, text="overflow!")
+
+    findings1 = check_containment(blank_prs)
+    assert len(findings1) == 1
+    # After validation, the registry must not retain entries for this slide.
+    assert list(iter_slide_containers(slide1)) == []
+    assert id(slide1) not in _SLIDE_REGISTRY
+
+    # --- Second pass (no new declarations): zero phantom findings. ---
+    findings2 = check_containment(blank_prs)
+    assert findings2 == []
+
+    # --- Second deck built in the same process: declare a CLEAN container.
+    # If registry cleanup regressed, a stale list for id(slide1) (or a reused
+    # id) could leak overflow children into this new pass.
+    slide2 = blank_prs.slides.add_slide(layout)
+    with begin_container(
+        slide2, name="card2",
+        left=1.0, top=1.0, width=3.0, height=2.0,
+    ):
+        _add_textbox(slide2, 1.2, 1.2, 2.0, 0.5, text="inside")
+
+    findings3 = check_containment(blank_prs)
+    assert findings3 == []
+
+
+def test_check_deck_extended_summary_errors_match_placed_containment(
+    one_slide_prs,
+):
+    """summary.errors must count only containment findings that were placed.
+
+    Regression for the double-count hazard where a finding with an
+    out-of-range slide_index was dropped by _place but still counted in
+    summary.errors — producing a summary that didn't match the per-slide
+    lists.
+    """
+    slide = one_slide_prs.slides[0]
+    with begin_container(
+        slide, name="metric_card",
+        left=1.0, top=1.0, width=3.0, height=2.0,
+    ):
+        _add_textbox(slide, 1.2, 2.8, 2.6, 0.5, text="overflow!")  # bottom overflow
+
+    result = check_deck_extended(one_slide_prs)
+
+    placed_containment_errors = sum(
+        1
+        for slide_data in result["slides"]
+        for f in slide_data["containment"]
+        if f.get("severity") == "error"
+    )
+    placed_overlaps = sum(len(s["overlaps"]) for s in result["slides"])
+    placed_oob = sum(len(s["out_of_bounds"]) for s in result["slides"])
+
+    # Per-slide containment list should have exactly 1 entry (normal path).
+    assert placed_containment_errors == 1
+    # summary.errors should equal the sum of all placed error-severity items
+    # — i.e. never larger than what the caller can see in the per-slide view.
+    assert result["summary"]["errors"] == (
+        placed_containment_errors + placed_overlaps + placed_oob
+    )
+
+
 def test_stack_cleaned_after_context_exit(one_slide_prs):
     """begin_container exit 後に innermost 判定が外れる (stack pop 確認)."""
     slide = one_slide_prs.slides[0]

@@ -127,6 +127,16 @@ def clear_container_registry() -> None:
         stack.clear()
 
 
+def clear_slide_containers(slide) -> None:
+    """Remove any container entries registered against this slide.
+
+    Called at the end of a validation pass so long-running processes
+    don't leak memory, and so ``id(slide)`` reuse can't bleed stale
+    bounds into a freshly-loaded slide.
+    """
+    _SLIDE_REGISTRY.pop(id(slide), None)
+
+
 @contextmanager
 def begin_container(
     slide,
