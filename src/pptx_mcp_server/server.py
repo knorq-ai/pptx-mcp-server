@@ -111,6 +111,9 @@ from .engine import (
     TimelinePhase,
     TimelineMilestone,
     add_milestone_timeline,
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card_row,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -1119,6 +1122,130 @@ def pptx_add_milestone_timeline(
             f"Added milestone timeline "
             f"({len(phases)} phases, {len(milestones)} milestones)"
         )
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_metric_card_row(
+    file_path: str,
+    slide_index: int,
+    cards: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    gap: float = 0.3,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a row of N MetricCard block components side-by-side (#132).
+
+    Each card stacks, top-to-bottom: small ``label`` → ``title`` → chart
+    (image when ``chart_image_path`` set, else blank placeholder rectangle)
+    → optional metrics row with per-cell ``(label, value)`` pairs.
+
+    ``cards``: list of card dicts. Supported keys: ``label``, ``title``,
+    ``chart_image_path``, ``metrics`` (list of ``{"label","value"}`` dicts),
+    ``fill_color``, ``border_color``, ``border_width``, ``label_color``,
+    ``title_color``, ``metric_label_color``, ``metric_value_color``,
+    ``padding``, ``title_size_pt``, ``label_size_pt``,
+    ``metric_label_size_pt``, ``metric_value_size_pt``. Colors accept hex
+    (no ``#``) or theme tokens when ``theme`` is provided.
+
+    Returns a dict ``{"cards": [{"left","top","width","height"}, ...],
+    "consumed_height": <float>, "consumed_width": <float>}``. Auto-renders
+    a preview PNG only when ``PPTX_MCP_AUTO_RENDER=1``.
+    """
+    try:
+        if not isinstance(cards, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "cards must be a list of dicts.",
+                parameter="cards",
+                hint="Pass a native list, e.g. [{\"label\":\"KPI\",\"title\":\"Revenue\"}].",
+                issue=132,
+            )
+
+        _card_known = {f.name for f in fields(MetricCardSpec)}
+        _metric_known = {f.name for f in fields(MetricEntry)}
+
+        card_specs: List[MetricCardSpec] = []
+        for i, spec in enumerate(cards):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"card[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            unknown = set(spec.keys()) - _card_known
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"card[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_card_known)}."
+                    ),
+                )
+            # Validate + coerce nested metrics list.
+            metrics_raw = spec.get("metrics") or []
+            if not isinstance(metrics_raw, list):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"card[{i}].metrics must be a list of dicts, got "
+                        f"{type(metrics_raw).__name__}."
+                    ),
+                )
+            metric_objs: List[MetricEntry] = []
+            for j, m in enumerate(metrics_raw):
+                if not isinstance(m, dict):
+                    raise EngineError(
+                        ErrorCode.INVALID_PARAMETER,
+                        (
+                            f"card[{i}].metrics[{j}]: must be a dict, got "
+                            f"{type(m).__name__}."
+                        ),
+                    )
+                m_unknown = set(m.keys()) - _metric_known
+                if m_unknown:
+                    raise EngineError(
+                        ErrorCode.INVALID_PARAMETER,
+                        (
+                            f"card[{i}].metrics[{j}]: unknown keys "
+                            f"{sorted(m_unknown)}; known keys: "
+                            f"{sorted(_metric_known)}."
+                        ),
+                    )
+                metric_objs.append(MetricEntry(**m))
+
+            spec_copy = dict(spec)
+            spec_copy["metrics"] = metric_objs
+            card_specs.append(MetricCardSpec(**spec_copy))
+
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_metric_card_row(
+            slide,
+            card_specs,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            gap=gap,
+            theme=theme,
+        )
+
+        # Envelope invariant: result must have 'message' (#120).
+        result["message"] = f"Added metric card row ({len(card_specs)} cards)."
 
         save_pptx(prs, file_path)
 

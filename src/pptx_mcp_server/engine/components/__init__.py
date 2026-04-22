@@ -11,9 +11,19 @@ from .container import (
     begin_container,
     clear_slide_containers,
 )
+from .metric_card import (
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card,
+    add_metric_card_row,
+)
 
 __all__ = [
     "ContainerBounds",
     "begin_container",
     "clear_slide_containers",
+    "MetricEntry",
+    "MetricCardSpec",
+    "add_metric_card",
+    "add_metric_card_row",
 ]

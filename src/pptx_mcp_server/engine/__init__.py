@@ -81,6 +81,12 @@ from .components.container import (
     ContainerBounds,
     begin_container,
 )
+from .components.metric_card import (
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card,
+    add_metric_card_row,
+)
 from .connectors import (
     add_connector,
     add_callout,
@@ -152,6 +158,7 @@ __all__ = [
     "ValidationFinding",
     # Components
     "ContainerBounds", "begin_container",
+    "MetricEntry", "MetricCardSpec", "add_metric_card", "add_metric_card_row",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",
