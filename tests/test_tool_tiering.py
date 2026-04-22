@@ -175,14 +175,19 @@ def test_advanced_functions_still_importable(monkeypatch):
         )
 
 
-def test_default_tier_count_matches_expectation():
+def test_default_tier_count_matches_expectation(monkeypatch):
     """Freeze the default-tier count as a regression guard.
 
     Update ``EXPECTED_DEFAULT_TIER`` and this count together when
     promoting a new tool into the default surface.
+
+    Uses ``_reload_with_env(None)`` so the assertion is independent of
+    the ambient ``PPTX_MCP_INCLUDE_ADVANCED`` env state — without this,
+    running under ``PPTX_MCP_INCLUDE_ADVANCED=1`` would surface 45 tools
+    in the live registry and fail the count.
     """
-    registered = _registered_tool_names()
-    # Sanity: the top-of-file live import sees the default surface.
+    srv = _reload_with_env(monkeypatch, None)
+    registered = set(srv.mcp._tool_manager._tools.keys())
     default_count = len(EXPECTED_DEFAULT_TIER)
     assert default_count == 20, (
         f"Default tier expected size 20, got {default_count}. "
