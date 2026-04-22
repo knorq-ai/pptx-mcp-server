@@ -331,6 +331,54 @@ directly — that tool is unaffected by this gate.
 | `pptx_check_layout` | Validate deck layouts: overlaps, out-of-bounds, overflow, readability |
 | `pptx_render_slide` | Render slide(s) to PNG via LibreOffice for visual verification |
 
+## MCP tool tiers (v0.6.0+)
+
+The MCP surface is split into two tiers (#137) so agents see a focused,
+productive default catalog and only opt into low-level primitives when
+explicitly needed.
+
+**Default surface (~20 tools)** — always registered. Covers
+setup / inspection (`pptx_create`, `pptx_get_info`, `pptx_read_slide`,
+`pptx_add_slide`), block components
+(`pptx_add_section_header`, `pptx_add_kpi_row`,
+`pptx_add_metric_card_row`, `pptx_add_numbered_list`,
+`pptx_add_page_marker`, `pptx_add_slide_footer`), high-level primitives
+(`pptx_add_data_table`, `pptx_add_responsive_card_row`,
+`pptx_add_milestone_timeline`, `pptx_add_flex_container`,
+`pptx_add_chart`, `pptx_add_image`), batch build (`pptx_build_slide`,
+`pptx_build_deck`), and validation / rendering (`pptx_check_layout`,
+`pptx_render_slide`).
+
+**Advanced tier (~25 tools)** — hidden from the MCP catalog unless
+opted in. Covers raw shape primitives (`pptx_add_textbox`,
+`pptx_add_shape`, `pptx_add_auto_fit_textbox`), low-level edit ops
+(`pptx_edit_text`, `pptx_add_paragraph`, `pptx_delete_shape`,
+`pptx_list_shapes`, `pptx_format_shape`), slide-level editing
+(`pptx_set_dimensions`, `pptx_set_slide_background`,
+`pptx_move_slide`, `pptx_delete_slide`, `pptx_duplicate_slide`),
+table-editing primitives (`pptx_add_table`, `pptx_edit_table_cell`,
+`pptx_edit_table_cells`, `pptx_format_table`),
+connectors / callouts / icons (`pptx_add_connector`, `pptx_add_callout`,
+`pptx_add_icon`, `pptx_list_icons`), composite helpers
+(`pptx_add_section_divider`, `pptx_add_content_slide`,
+`pptx_add_bullet_block`), and the deprecated `pptx_add_kpi_row_legacy`.
+
+### Enabling the advanced tier
+
+Set the env var before starting the server:
+
+```bash
+PPTX_MCP_INCLUDE_ADVANCED=1 python -m pptx_mcp_server
+```
+
+The var accepts `1`, `true`, or `yes` (case-insensitive). It is read
+**once at import**, so restart the server after changing it.
+
+Advanced-tier tools remain importable as regular Python functions even
+when the gate is off — `from pptx_mcp_server.server import
+pptx_add_textbox` keeps working for library-mode callers and tests;
+only FastMCP registration is gated.
+
 ## Dependencies
 
 Required (installed by `pip install pptx-mcp-server`):

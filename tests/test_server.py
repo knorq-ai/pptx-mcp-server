@@ -108,35 +108,18 @@ class TestToolRegistration:
 
     def test_all_tools_registered(self):
         # FastMCP stores tools internally; list them via the _tool_manager.
-        # v0.3.1 (#108): dropped hardcoded "25 tools" drift. The expected
-        # list is a *subset* — new tools can be added without editing this
-        # assertion as long as the core tools stay registered.
+        # v0.3.1 (#108): dropped hardcoded "25 tools" drift.
+        # v0.6.0 (#137): tool tiering — advanced tools are hidden from
+        # the default registry (env-gate ``PPTX_MCP_INCLUDE_ADVANCED``).
+        # The expected list below therefore only contains **default-tier**
+        # tools so the assertion holds without setting the env var.
         tool_names = list(mcp._tool_manager._tools.keys())
         expected = [
             "pptx_create",
             "pptx_get_info",
             "pptx_read_slide",
-            "pptx_list_shapes",
             "pptx_add_slide",
-            "pptx_delete_slide",
-            "pptx_duplicate_slide",
-            "pptx_set_slide_background",
-            "pptx_set_dimensions",
-            "pptx_add_textbox",
-            "pptx_edit_text",
-            "pptx_add_paragraph",
-            "pptx_add_shape",
             "pptx_add_image",
-            "pptx_delete_shape",
-            "pptx_format_shape",
-            "pptx_add_table",
-            "pptx_edit_table_cell",
-            "pptx_edit_table_cells",
-            "pptx_format_table",
-            "pptx_add_content_slide",
-            "pptx_add_section_divider",
-            "pptx_add_kpi_row_legacy",
-            "pptx_add_bullet_block",
             "pptx_render_slide",
         ]
         for name in expected:
@@ -1080,9 +1063,13 @@ class TestNoStale25Tools:
     def test_no_hardcoded_25_tools_assertion(self):
         # v0.3.1 (#108): the test asserts that the live FastMCP
         # registration has at least the core tools, without a brittle
-        # hardcoded count. 37+ tools are registered today.
+        # hardcoded count.
+        # v0.6.0 (#137): with tool tiering, the default surface is
+        # ~20 tools (45 - 25 advanced). The historical > 25 bound no
+        # longer holds with tiering enabled, so the assertion now
+        # guards against accidental collapse of the default surface.
         tool_names = list(mcp._tool_manager._tools.keys())
-        assert len(tool_names) > 25, (
-            "FastMCP should register well beyond the historical 25-tool "
-            f"baseline — got {len(tool_names)}"
+        assert len(tool_names) >= 15, (
+            "Default MCP surface should register at least the block-"
+            f"component + batch tier — got {len(tool_names)}"
         )

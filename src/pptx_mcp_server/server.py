@@ -64,6 +64,11 @@ from ._render import (
     _auto_render_timeout,
     _run_auto_render,
 )
+from ._tool_registry import (
+    advanced_tool_names,
+    is_advanced_enabled,
+    mcp_tool,
+)
 from .engine import (
     EngineError,
     ErrorCode,
@@ -188,6 +193,38 @@ timeout/failure. `pptx_check_layout(detailed=True)` embeds its `slides` /
 `TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`. On failure, read `error.hint`
 (if present) for recovery guidance.
 
+## Tool Tiers (v0.6.0+; #137)
+The MCP surface is split into two tiers to keep the default agent-facing
+catalog focused on the productive block-component + batch layer:
+
+- **Default surface** — setup/inspection (`pptx_create`, `pptx_get_info`,
+  `pptx_read_slide`, `pptx_add_slide`), block components
+  (`pptx_add_section_header`, `pptx_add_kpi_row`,
+  `pptx_add_metric_card_row`, `pptx_add_numbered_list`,
+  `pptx_add_page_marker`, `pptx_add_slide_footer`), high-level
+  primitives (`pptx_add_data_table`, `pptx_add_responsive_card_row`,
+  `pptx_add_milestone_timeline`, `pptx_add_flex_container`,
+  `pptx_add_chart`, `pptx_add_image`), batch build (`pptx_build_slide`,
+  `pptx_build_deck`), and validation/rendering (`pptx_check_layout`,
+  `pptx_render_slide`).
+- **Advanced tier** — raw shape primitives (`pptx_add_textbox`,
+  `pptx_add_shape`, `pptx_add_auto_fit_textbox`), low-level edit ops
+  (`pptx_edit_text`, `pptx_add_paragraph`, `pptx_delete_shape`,
+  `pptx_list_shapes`, `pptx_format_shape`), slide-level editing
+  (`pptx_set_dimensions`, `pptx_set_slide_background`,
+  `pptx_move_slide`, `pptx_delete_slide`, `pptx_duplicate_slide`),
+  table editing primitives (`pptx_add_table`, `pptx_edit_table_cell`,
+  `pptx_edit_table_cells`, `pptx_format_table`), connectors / callouts
+  / icons (`pptx_add_connector`, `pptx_add_callout`, `pptx_add_icon`,
+  `pptx_list_icons`), composite helpers (`pptx_add_section_divider`,
+  `pptx_add_content_slide`, `pptx_add_bullet_block`), and the legacy
+  `pptx_add_kpi_row_legacy`.
+
+Advanced-tier tools are **hidden from the MCP catalog by default**.
+Opt in by setting `PPTX_MCP_INCLUDE_ADVANCED=1` in the environment
+before the server starts (accepts `1`/`true`/`yes`). The env var is
+read once at import, so restart the server after changing it.
+
 ## Auto-Render (opt-in; OFF by default)
 Enable via `PPTX_MCP_AUTO_RENDER=1`; timeout (seconds) via
 `PPTX_MCP_RENDER_TIMEOUT` (default 10). On timeout/failure the primary tool
@@ -216,7 +253,7 @@ def _auto_render(file_path: str, slide_index: int) -> Dict[str, Any]:
 
 # --- Presentation ------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_create(
     file_path: str,
     width_inches: float = 13.333,
@@ -229,7 +266,7 @@ def pptx_create(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_get_info(file_path: str) -> str:
     """Get presentation overview: slide count, dimensions, shape summaries."""
     try:
@@ -238,7 +275,7 @@ def pptx_get_info(file_path: str) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_read_slide(file_path: str, slide_index: int) -> str:
     """Read detailed content of a slide -- all shapes, text, tables."""
     try:
@@ -247,7 +284,7 @@ def pptx_read_slide(file_path: str, slide_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_list_shapes(file_path: str, slide_index: int) -> str:
     """List all shapes on a slide with indices, types, positions, text preview."""
     try:
@@ -258,7 +295,7 @@ def pptx_list_shapes(file_path: str, slide_index: int) -> str:
 
 # --- Slides -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
     """Add a new slide. Layout 6 = Blank (most common)."""
     try:
@@ -267,7 +304,7 @@ def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
     """Move a slide from one position to another. 0-based indices."""
     try:
@@ -276,7 +313,7 @@ def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_delete_slide(file_path: str, slide_index: int) -> str:
     """Delete a slide by 0-based index."""
     try:
@@ -285,7 +322,7 @@ def pptx_delete_slide(file_path: str, slide_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
     """Duplicate a slide (appended at end)."""
     try:
@@ -294,7 +331,7 @@ def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> str:
     """Set solid background color for a slide. Color as hex e.g. '051C2C' (without #)."""
     try:
@@ -303,7 +340,7 @@ def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> s
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_set_dimensions(file_path: str, width: float, height: float) -> str:
     """Set presentation slide dimensions in inches (applies to all slides)."""
     try:
@@ -314,7 +351,7 @@ def pptx_set_dimensions(file_path: str, width: float, height: float) -> str:
 
 # --- Textboxes ----------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_textbox(
     file_path: str,
     slide_index: int,
@@ -345,7 +382,7 @@ def pptx_add_textbox(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_auto_fit_textbox(
     file_path: str,
     slide_index: int,
@@ -384,7 +421,7 @@ def pptx_add_auto_fit_textbox(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_flex_container(
     file_path: str,
     slide_index: int,
@@ -436,7 +473,7 @@ def pptx_add_flex_container(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_edit_text(
     file_path: str,
     slide_index: int,
@@ -463,7 +500,7 @@ def pptx_edit_text(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_paragraph(
     file_path: str,
     slide_index: int,
@@ -491,7 +528,7 @@ def pptx_add_paragraph(
 
 # --- Shapes -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_shape(
     file_path: str,
     slide_index: int,
@@ -524,7 +561,7 @@ def pptx_add_shape(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_image(
     file_path: str,
     slide_index: int,
@@ -541,7 +578,7 @@ def pptx_add_image(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_delete_shape(file_path: str, slide_index: int, shape_index: int) -> str:
     """Delete a shape from a slide by its 0-based index."""
     try:
@@ -550,7 +587,7 @@ def pptx_delete_shape(file_path: str, slide_index: int, shape_index: int) -> str
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_format_shape(
     file_path: str,
     slide_index: int,
@@ -579,7 +616,7 @@ def pptx_format_shape(
 
 # --- Tables -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_table(
     file_path: str,
     slide_index: int,
@@ -639,7 +676,7 @@ def pptx_add_table(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_edit_table_cell(
     file_path: str,
     slide_index: int,
@@ -663,7 +700,7 @@ def pptx_edit_table_cell(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_edit_table_cells(
     file_path: str,
     slide_index: int,
@@ -689,7 +726,7 @@ def pptx_edit_table_cells(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_format_table(
     file_path: str,
     slide_index: int,
@@ -712,7 +749,7 @@ def pptx_format_table(
 
 # --- Composites ---------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_content_slide(
     file_path: str,
     title: str,
@@ -729,7 +766,7 @@ def pptx_add_content_slide(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_section_divider(
     file_path: str,
     title: str,
@@ -745,7 +782,7 @@ def pptx_add_section_divider(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_kpi_row_legacy(
     file_path: str,
     slide_index: int,
@@ -796,7 +833,7 @@ def pptx_add_kpi_row_legacy(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_bullet_block(
     file_path: str,
     slide_index: int,
@@ -828,7 +865,7 @@ def pptx_add_bullet_block(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_responsive_card_row(
     file_path: str,
     slide_index: int,
@@ -930,7 +967,7 @@ def pptx_add_responsive_card_row(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_section_header(
     file_path: str,
     slide_index: int,
@@ -987,7 +1024,7 @@ def pptx_add_section_header(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_kpi_row(
     file_path: str,
     slide_index: int,
@@ -1084,7 +1121,7 @@ def pptx_add_kpi_row(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_data_table(
     file_path: str,
     slide_index: int,
@@ -1214,7 +1251,7 @@ def pptx_add_data_table(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_milestone_timeline(
     file_path: str,
     slide_index: int,
@@ -1338,7 +1375,7 @@ def pptx_add_milestone_timeline(
 
 # --- Markers (page marker / slide footer) -------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_page_marker(
     file_path: str,
     slide_index: int,
@@ -1375,7 +1412,7 @@ def pptx_add_page_marker(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_slide_footer(
     file_path: str,
     slide_index: int,
@@ -1414,7 +1451,7 @@ def pptx_add_slide_footer(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_numbered_list(
     file_path: str,
     slide_index: int,
@@ -1504,7 +1541,7 @@ def pptx_add_numbered_list(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_metric_card_row(
     file_path: str,
     slide_index: int,
@@ -1630,7 +1667,7 @@ def pptx_add_metric_card_row(
 
 # --- Batch Build --------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_build_slide(
     file_path: str,
     spec: Dict[str, Any],
@@ -1682,7 +1719,7 @@ def pptx_build_slide(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_build_deck(
     file_path: str,
     slides: List[Dict[str, Any]],
@@ -1716,7 +1753,7 @@ def pptx_build_deck(
 
 # --- Connectors & Callouts ----------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_connector(
     file_path: str,
     slide_index: int,
@@ -1749,7 +1786,7 @@ def pptx_add_connector(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_callout(
     file_path: str,
     slide_index: int,
@@ -1788,7 +1825,7 @@ def pptx_add_callout(
 
 # --- Icons --------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_list_icons(
     category: str = "",
     search: str = "",
@@ -1810,7 +1847,7 @@ def pptx_list_icons(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_icon(
     file_path: str,
     slide_index: int,
@@ -1837,7 +1874,7 @@ def pptx_add_icon(
 
 # --- Charts -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_chart(
     file_path: str,
     slide_index: int,
@@ -1878,7 +1915,7 @@ def pptx_add_chart(
 
 # --- Rendering ----------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_render_slide(
     file_path: str,
     slide_index: int = -1,
@@ -1931,7 +1968,7 @@ def _format_check_layout_summary(result: Dict[str, Any]) -> str:
     return f"Found {len(lines)} layout issues:\n" + "\n".join(lines)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_check_layout(
     file_path: str,
     detailed: bool = False,
