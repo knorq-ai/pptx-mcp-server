@@ -18,7 +18,6 @@ import pytest
 from PIL import Image
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from pptx_mcp_server.engine.components.container import clear_container_registry
 from pptx_mcp_server.engine.components.metric_card import (
     MetricCardSpec,
     MetricEntry,
@@ -28,13 +27,8 @@ from pptx_mcp_server.engine.components.metric_card import (
 from pptx_mcp_server.engine.pptx_io import EngineError, ErrorCode
 from pptx_mcp_server.engine.validation import check_containment
 
-
-@pytest.fixture(autouse=True)
-def _isolated_registry():
-    """Each test starts with a clean container registry."""
-    clear_container_registry()
-    yield
-    clear_container_registry()
+# Container registry isolation is provided globally by the autouse
+# ``_isolated_container_registry`` fixture in ``tests/conftest.py`` (Task G).
 
 
 def _in(emu: int) -> float:

@@ -13,19 +13,11 @@ import json
 
 import pytest
 
-from pptx_mcp_server.engine.components.container import (
-    clear_container_registry,
-)
 from pptx_mcp_server.engine.components.kpi_row import KPISpec, add_kpi_row
 from pptx_mcp_server.engine.validation import check_containment
 
-
-@pytest.fixture(autouse=True)
-def _isolated_registry():
-    """Each test starts with a clean container registry (Issue #130 pattern)."""
-    clear_container_registry()
-    yield
-    clear_container_registry()
+# Container registry isolation is provided globally by the autouse
+# ``_isolated_container_registry`` fixture in ``tests/conftest.py`` (Task G).
 
 
 def _hex(shape_fill):

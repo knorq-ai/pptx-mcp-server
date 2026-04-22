@@ -18,7 +18,6 @@ import pytest
 from pptx_mcp_server.engine.components.container import (
     ContainerBounds,
     begin_container,
-    clear_container_registry,
 )
 from pptx_mcp_server.engine.shapes import (
     _add_shape,
@@ -31,12 +30,8 @@ from pptx_mcp_server.engine.validation import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _isolated_registry():
-    """Ensure each test starts with a clean container registry."""
-    clear_container_registry()
-    yield
-    clear_container_registry()
+# Container registry isolation is provided globally by the autouse
+# ``_isolated_container_registry`` fixture in ``tests/conftest.py`` (Task G).
 
 
 # ---------------------------------------------------------------------------

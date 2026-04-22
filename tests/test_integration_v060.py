@@ -27,7 +27,6 @@ from pptx.util import Inches
 
 from pptx_mcp_server.engine.components.container import (
     begin_container,
-    clear_container_registry,
 )
 from pptx_mcp_server.engine.components.section_header import (
     SectionHeaderSpec,
@@ -64,18 +63,11 @@ _SLIDE_W = 13.333
 _SLIDE_H = 7.5
 
 
-@pytest.fixture(autouse=True)
-def _isolated_registry():
-    """Each test starts and ends with a clean container registry.
-
-    ``check_containment`` normally clears registry entries consumed-on-use,
-    but tests that set up state without calling it (or that assert on
-    findings mid-test) still need explicit isolation to avoid cross-test
-    bleed.
-    """
-    clear_container_registry()
-    yield
-    clear_container_registry()
+# Container registry isolation is provided globally by the autouse
+# ``_isolated_container_registry`` fixture in ``tests/conftest.py`` (Task G).
+# ``check_containment`` normally clears registry entries consumed-on-use,
+# but tests that set up state without calling it (or that assert on
+# findings mid-test) still need explicit isolation to avoid cross-test bleed.
 
 
 def _new_prs_with_blank_slide():

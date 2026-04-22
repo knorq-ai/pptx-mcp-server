@@ -20,8 +20,10 @@ from pptx_mcp_server.engine.components.numbered_list import (
     _NUMBER_ROW_H,
     _RULE_ROW_H,
 )
-from pptx_mcp_server.engine.components.container import clear_container_registry
 from pptx_mcp_server.engine.validation import check_containment
+
+# Container registry isolation is provided globally by the autouse
+# ``_isolated_container_registry`` fixture in ``tests/conftest.py`` (Task G).
 
 
 EMU_PER_INCH = 914400
@@ -29,14 +31,6 @@ EMU_PER_INCH = 914400
 
 def _in(emu: int) -> float:
     return emu / EMU_PER_INCH
-
-
-@pytest.fixture(autouse=True)
-def _isolated_registry():
-    """Each test starts with a clean container registry."""
-    clear_container_registry()
-    yield
-    clear_container_registry()
 
 
 def _four_items() -> list[NumberedItem]:
