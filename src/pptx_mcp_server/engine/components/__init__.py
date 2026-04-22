@@ -17,6 +17,10 @@ from .markers import (
     add_page_marker,
     add_slide_footer,
 )
+from .section_header import (
+    SectionHeaderSpec,
+    add_section_header,
+)
 
 __all__ = [
     "ContainerBounds",
@@ -26,4 +30,6 @@ __all__ = [
     "SlideFooterSpec",
     "add_page_marker",
     "add_slide_footer",
+    "SectionHeaderSpec",
+    "add_section_header",
 ]

@@ -87,6 +87,10 @@ from .components.markers import (
     add_page_marker,
     add_slide_footer,
 )
+from .components.section_header import (
+    SectionHeaderSpec,
+    add_section_header,
+)
 from .connectors import (
     add_connector,
     add_callout,
@@ -160,6 +164,7 @@ __all__ = [
     "ContainerBounds", "begin_container",
     "PageMarkerSpec", "SlideFooterSpec",
     "add_page_marker", "add_slide_footer",
+    "SectionHeaderSpec", "add_section_header",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",
