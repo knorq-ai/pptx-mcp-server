@@ -81,6 +81,10 @@ from .components.container import (
     ContainerBounds,
     begin_container,
 )
+from .components.kpi_row import (
+    KPISpec,
+    add_kpi_row as add_kpi_row_block,
+)
 from .connectors import (
     add_connector,
     add_callout,
@@ -152,6 +156,7 @@ __all__ = [
     "ValidationFinding",
     # Components
     "ContainerBounds", "begin_container",
+    "KPISpec", "add_kpi_row_block",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",

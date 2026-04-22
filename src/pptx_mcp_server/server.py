@@ -111,6 +111,8 @@ from .engine import (
     TimelinePhase,
     TimelineMilestone,
     add_milestone_timeline,
+    KPISpec,
+    add_kpi_row_block,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -717,18 +719,23 @@ def pptx_add_section_divider(
 
 
 @mcp.tool()
-def pptx_add_kpi_row(
+def pptx_add_kpi_row_legacy(
     file_path: str,
     slide_index: int,
     kpis: List[Dict[str, Any]],
     y: float,
 ) -> str:
-    """Add a row of KPI callout boxes.
+    """(Deprecated) Add a row of KPI callout boxes.
 
     ``kpis``: list of dicts, e.g. ``[{"value":"107.8M","label":"Revenue"}]``.
     ``y``: vertical position in inches.
     v0.3.0 (#97): was ``kpis_json: str``.
     Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+
+    DEPRECATED (v0.6.0, #133): this is the legacy simple-callout variant.
+    New callers should prefer the block-component ``pptx_add_kpi_row``,
+    which supports theme tokens, optional card frames, detail lines, and
+    container-aware containment validation.
     """
     try:
         if not isinstance(kpis, list):
@@ -871,6 +878,103 @@ def pptx_add_responsive_card_row(
 
         render_info = _auto_render(file_path, slide_index)
         # result は既に richer dict — auto-render の結果を同じ dict にマージ。
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_kpi_row(
+    file_path: str,
+    slide_index: int,
+    kpis: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    height: float = 0.95,
+    gap: float = 0.15,
+    card_fill: Optional[str] = None,
+    card_border: Optional[str] = None,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a row of N KPI cells (label / big value / optional detail).
+
+    Each cell stacks a 9pt label, a 26pt bold value (single-line auto-fit),
+    and an optional 8pt detail line. Cells are evenly distributed across
+    ``width`` with ``gap`` inches between them; ``n == 1`` consumes full
+    width with no gap.
+
+    ``kpis``: list of dicts with keys ``label``, ``value``, ``detail``
+    (optional), ``value_color`` (theme token or hex, default ``"primary"``),
+    ``delta_color`` (reserved for future delta variant).
+
+    When ``card_fill`` or ``card_border`` is provided the component draws
+    a rectangle per cell behind the text (e.g. ``card_fill="highlight_row"``
+    for a cream band, ``card_border="rule_subtle"`` for a thin frame).
+
+    ``theme``: theme registry key (e.g. ``"ir"``, ``"mckinsey"``). When
+    omitted, built-in fallback colors are used for tokens. Auto-renders a
+    preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+    """
+    try:
+        if not isinstance(kpis, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "kpis must be a list of dicts.",
+                parameter="kpis",
+                hint='Pass a native list, e.g. [{"label":"Revenue","value":"107.8M"}].',
+                issue=133,
+            )
+        # Strict-key validation per dict — surfaces typos with an actionable
+        # message rather than letting KPISpec(**d) raise a bare TypeError.
+        _kpi_known_keys = {f.name for f in fields(KPISpec)}
+        for i, spec in enumerate(kpis):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"kpis[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            unknown = set(spec.keys()) - _kpi_known_keys
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"kpis[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_kpi_known_keys)}."
+                    ),
+                )
+        kpi_objs = [KPISpec(**d) for d in kpis]
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        row_result = add_kpi_row_block(
+            slide,
+            kpi_objs,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            gap=gap,
+            theme=theme,
+            card_fill=card_fill,
+            card_border=card_border,
+        )
+
+        # Serialize before save so a broken result dict doesn't corrupt the
+        # file on disk (mirrors #34 pattern used by pptx_add_responsive_card_row).
+        result: Dict[str, Any] = {
+            "message": f"Added KPI row with {len(kpi_objs)} cells on slide [{slide_index}]",
+            "cells": [{"bounds": c["bounds"]} for c in row_result["cells"]],
+            "consumed_height": row_result["consumed_height"],
+        }
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
         if render_info.get("rendered"):
             result["preview_path"] = render_info.get("preview_path")
         elif render_info.get("reason") != "disabled":

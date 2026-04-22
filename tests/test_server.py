@@ -49,7 +49,7 @@ from pptx_mcp_server.server import (
     pptx_format_table,
     pptx_add_content_slide,
     pptx_add_section_divider,
-    pptx_add_kpi_row,
+    pptx_add_kpi_row_legacy,
     pptx_add_bullet_block,
     pptx_add_image,
     pptx_render_slide,
@@ -135,7 +135,7 @@ class TestToolRegistration:
             "pptx_format_table",
             "pptx_add_content_slide",
             "pptx_add_section_divider",
-            "pptx_add_kpi_row",
+            "pptx_add_kpi_row_legacy",
             "pptx_add_bullet_block",
             "pptx_render_slide",
         ]
@@ -251,12 +251,12 @@ class TestStructuredParams:
 
     def test_add_kpi_row_with_native_list(self, deck):
         kpis = [{"value": "99", "label": "Score"}]
-        result = pptx_add_kpi_row(deck, 0, kpis, 2.0)
+        result = pptx_add_kpi_row_legacy(deck, 0, kpis, 2.0)
         payload = _unwrap_ok(result)
         assert "Added 1 KPI" in payload["message"]
 
     def test_add_kpi_row_wrong_type_rejected(self, deck):
-        result = pptx_add_kpi_row(deck, 0, "not a list", 2.0)  # type: ignore[arg-type]
+        result = pptx_add_kpi_row_legacy(deck, 0, "not a list", 2.0)  # type: ignore[arg-type]
         err = _unwrap_err(result)
         assert err["code"] == "INVALID_PARAMETER"
         assert err["parameter"] == "kpis"
@@ -770,7 +770,7 @@ class TestAutoRenderOptIn:
         monkeypatch.setattr(server_mod, "render_slide", fake_render)
 
         # invalid slide_index → add_kpi_row raises before _auto_render runs.
-        result = server_mod.pptx_add_kpi_row(
+        result = server_mod.pptx_add_kpi_row_legacy(
             deck, 999, [{"value": "1", "label": "x"}], 2.0
         )
         _unwrap_err(result)
@@ -942,7 +942,7 @@ class TestStrictNestedValidation:
 
     def test_kpi_row_rejects_unknown_key(self, deck):
         err = _unwrap_err(
-            pptx_add_kpi_row(
+            pptx_add_kpi_row_legacy(
                 deck,
                 slide_index=0,
                 kpis=[{"label": "x", "value": "y", "typo": 1}],
@@ -954,7 +954,7 @@ class TestStrictNestedValidation:
 
     def test_kpi_row_valid_still_works(self, deck):
         payload = _unwrap_ok(
-            pptx_add_kpi_row(
+            pptx_add_kpi_row_legacy(
                 deck,
                 slide_index=0,
                 kpis=[{"label": "Rev", "value": "100"}],

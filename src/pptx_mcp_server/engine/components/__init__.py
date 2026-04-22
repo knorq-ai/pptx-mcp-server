@@ -11,9 +11,15 @@ from .container import (
     begin_container,
     clear_slide_containers,
 )
+from .kpi_row import (
+    KPISpec,
+    add_kpi_row as add_kpi_row_block,
+)
 
 __all__ = [
     "ContainerBounds",
     "begin_container",
     "clear_slide_containers",
+    "KPISpec",
+    "add_kpi_row_block",
 ]
