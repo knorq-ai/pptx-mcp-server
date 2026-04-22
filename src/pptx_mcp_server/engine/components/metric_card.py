@@ -16,10 +16,10 @@ Design notes
   by sibling components landing on the same foundation branch.
 - Color fields on :class:`MetricCardSpec` default to theme tokens
   (``"primary"``, ``"text_secondary"``, ``"rule_subtle"``). When the caller
-  passes ``theme=None``, the module-local :func:`_resolve_color` falls back
+  passes ``theme=None``, the shared
+  :func:`engine.components._util.resolve_component_color` helper falls back
   to MCKINSEY-equivalent hexes so token defaults never reach the paint
-  layer unresolved (mirror of ``engine/timeline.py:_style_color`` /
-  ``engine/components/section_header.py:_resolve_color``).
+  layer unresolved (shared across all v0.6.0 block components).
 - Metric value textboxes use ``wrap=False`` so large numbers scale by width
   rather than wrapping mid-figure.
 """
@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..pptx_io import EngineError, ErrorCode
+from ._util import resolve_component_color as _resolve_color
 from .container import begin_container
 
 # Vertical allocation inside the inner (padded) box.
@@ -44,14 +45,10 @@ _METRIC_VALUE_CELL_H: float = 0.50
 _MIN_CHART_H: float = 0.5
 
 
-# Hardcoded fallbacks for the default theme tokens used by this component.
-# Covers every token appearing in MetricCardSpec defaults + the background
-# hex used as chart-placeholder fill.
-_FALLBACK_COLORS = {
-    "primary": "051C2C",
-    "text_secondary": "666666",
-    "rule_subtle": "E0E0E0",
-}
+# Theme-token resolution is delegated to the shared
+# ``engine.components._util.resolve_component_color`` helper (imported above
+# as ``_resolve_color``); see ``_util._FALLBACK_TOKENS`` for the canonical
+# no-theme fallback palette.
 
 
 @dataclass
@@ -103,26 +100,6 @@ class MetricCardSpec:
     label_size_pt: float = 9
     metric_label_size_pt: float = 10
     metric_value_size_pt: float = 22
-
-
-def _resolve_color(token_or_hex: str, theme: str | None) -> str:
-    """Resolve a token/hex to 6-hex (no ``#``) even when ``theme`` is None.
-
-    When a theme is provided, delegates to :func:`resolve_theme_color`.
-    Otherwise maps the well-known default tokens to hardcoded MCKINSEY hex
-    equivalents; raw hex passes through (with an optional leading ``#``
-    stripped).
-    """
-    if not token_or_hex:
-        return ""
-    if theme:
-        from ...theme import resolve_theme_color
-
-        return resolve_theme_color(token_or_hex, theme)
-    if token_or_hex in _FALLBACK_COLORS:
-        return _FALLBACK_COLORS[token_or_hex]
-    # Raw hex passthrough (strip optional ``#``).
-    return token_or_hex.lstrip("#")
 
 
 def add_metric_card(

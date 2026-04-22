@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ...theme import resolve_theme_color
+from ._util import resolve_component_color as _resolve_color
 from .container import begin_container
 
 # NOTE: ``..shapes`` (engine.shapes) imports ``begin_container`` from this
@@ -40,37 +40,6 @@ from .container import begin_container
 # ``add_auto_fit_textbox`` at the top of this file would form a circular
 # import (engine.shapes ↔ engine.components.__init__). We defer those
 # imports to the body of :func:`add_section_header` instead.
-
-# Fallback hex values used when ``theme`` is ``None`` — matches the
-# MCKINSEY palette which is the historical default across the engine
-# (cards.py, timeline.py follow the same convention, #125).
-_TOKEN_FALLBACK_HEX: dict[str, str] = {
-    "primary": "051C2C",
-    "text_secondary": "666666",
-    "rule_subtle": "E0E0E0",
-}
-
-
-def _resolve_color(token_or_hex: str, theme_name: Optional[str]) -> str:
-    """Resolve a theme token / raw hex to a 6-hex value primitives accept.
-
-    When ``theme_name`` is provided, delegates to the central resolver
-    (``resolve_theme_color``). When no theme is in play and the input is
-    not recognizable as hex, falls back to the MCKINSEY-equivalent default
-    hex value so atomic primitives never receive an unresolved token like
-    ``"primary"`` (which would raise ``Invalid color`` in ``_parse_color``).
-    """
-    if not token_or_hex:
-        return ""
-    if theme_name:
-        return resolve_theme_color(token_or_hex, theme_name)
-    stripped = token_or_hex.lstrip("#")
-    # Heuristic: treat a 6-char all-hex string as a raw color.
-    if len(stripped) == 6 and all(
-        c in "0123456789abcdefABCDEF" for c in stripped
-    ):
-        return stripped
-    return _TOKEN_FALLBACK_HEX.get(token_or_hex, stripped)
 
 # ---------------------------------------------------------------------------
 # Layout constants (inches)

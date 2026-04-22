@@ -15,9 +15,9 @@ Rendering is wrapped in a ``begin_container`` so ``check_containment`` can
 validate all children stay inside the bounds.
 
 Color tokens (``rule_subtle``, ``primary``, ``text_secondary``) resolve via
-the theme registry when ``theme`` is supplied; otherwise a small
-``_TOKEN_FALLBACK_HEX`` table provides sensible neutral defaults so the
-component renders cleanly without a theme.
+the theme registry when ``theme`` is supplied; otherwise the shared
+``engine.components._util._FALLBACK_TOKENS`` table provides sensible
+neutral defaults so the component renders cleanly without a theme.
 
 Layout (per item, top to bottom):
 
@@ -38,6 +38,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Optional
+
+from ._util import resolve_component_color as _resolve_color
 
 
 # --------------------------------------------------------------------------
@@ -69,32 +71,10 @@ class NumberedItem:
     body: str
 
 
-# --------------------------------------------------------------------------
-# Theme-token fallbacks (no-theme defaults)
-# --------------------------------------------------------------------------
-
-# When ``theme is None`` we still want neutral, readable colors for common
-# semantic tokens. Raw hex input is passed through unchanged by
-# ``_resolve_color``.
-_TOKEN_FALLBACK_HEX = {
-    "primary": "051C2C",
-    "text_secondary": "666666",
-    "rule_subtle": "E0E0E0",
-}
-
-
-def _resolve_color(token_or_hex: str, theme: Optional[str]) -> str:
-    """Resolve a theme token or raw hex to a 6-char hex (no ``#``).
-
-    Mirrors the lightweight pattern used by #135/#136/#132/#133: when a
-    theme name is given, delegate to ``resolve_theme_color``; otherwise
-    look the token up in ``_TOKEN_FALLBACK_HEX`` and return raw-hex input
-    unchanged if it isn't a known token.
-    """
-    if theme:
-        from pptx_mcp_server.theme import resolve_theme_color
-        return resolve_theme_color(token_or_hex, theme)
-    return _TOKEN_FALLBACK_HEX.get(token_or_hex, token_or_hex)
+# Theme-token resolution is delegated to the shared
+# ``engine.components._util.resolve_component_color`` helper (imported above
+# as ``_resolve_color``) to keep every block component's fallback palette
+# and precedence rules identical (Task D, v0.6.0 consolidation).
 
 
 # --------------------------------------------------------------------------
@@ -156,7 +136,7 @@ def add_numbered_list(
             Font sizes in points. Body/title use auto-fit ellipsis if the
             content is too long for the allocated space.
         theme: Optional theme name for token resolution. ``None`` → use
-            ``_TOKEN_FALLBACK_HEX`` defaults.
+            ``engine.components._util._FALLBACK_TOKENS`` defaults.
 
     Returns:
         A dict with::

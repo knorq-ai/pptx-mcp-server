@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from ._util import resolve_component_color as _resolve_color
+
 
 __all__ = ["KPISpec", "add_kpi_row"]
 
@@ -52,39 +54,10 @@ class KPISpec:
     delta_color: str = "primary"  # reserved; unused in MVP
 
 
-# Theme-token fallback map: used when ``theme=None`` so hardcoded token names
-# inside the renderer still resolve to reasonable hex colors without a theme
-# registry lookup. Keys mirror the v0.6.0 standard tokens (primary,
-# text_secondary, highlight_row, rule_subtle). Values are ``#``-less 6-hex.
-_FALLBACK_TOKENS = {
-    "primary": "051C2C",
-    "text_secondary": "666666",
-    "highlight_row": "F8F9F5",  # cream
-    "rule_subtle": "E0E0E0",
-}
-
-
-def _resolve_color(token_or_hex: str, theme: Optional[str]) -> str:
-    """Resolve a theme token / raw hex to ``#``-less 6-hex.
-
-    If ``theme`` is provided, delegate to the shared
-    ``pptx_mcp_server.theme.resolve_theme_color`` so the caller's chosen
-    palette is honored. Otherwise fall back to the built-in token map
-    (primary, text_secondary, highlight_row, rule_subtle) so a no-theme
-    caller still gets sensible defaults. Raw hex inputs pass through
-    unchanged.
-
-    The helper is defined locally (rather than pulled from theme.py) so
-    the component's fallback behavior stays unit-test-stable even as the
-    shared theme module evolves.
-    """
-    if theme:
-        # Imported lazily to keep component-level import cost low and avoid
-        # any theory-of-circularity issues during engine init.
-        from pptx_mcp_server.theme import resolve_theme_color
-
-        return resolve_theme_color(token_or_hex, theme)
-    return _FALLBACK_TOKENS.get(token_or_hex, token_or_hex)
+# Theme-token resolution is delegated to the shared
+# ``engine.components._util.resolve_component_color`` helper (imported above
+# as ``_resolve_color``). Fallback palette covers the 4 v0.6.0 standard
+# tokens (primary, text_secondary, highlight_row, rule_subtle).
 
 
 # Layout constants (inches) — tuned for a 0.95" cell height default. Y
@@ -130,7 +103,7 @@ def add_kpi_row(
         gap: horizontal spacing between cells in inches.
         theme: optional theme-registry key (``"ir"``, ``"mckinsey"``, …).
             When ``None``, hardcoded fallback colors are used (see
-            ``_FALLBACK_TOKENS``).
+            ``engine.components._util._FALLBACK_TOKENS``).
         card_fill: optional theme token / hex for a per-cell rectangle
             fill. ``None`` means no fill. Typical value: ``"highlight_row"``.
         card_border: optional theme token / hex for a per-cell rectangle
