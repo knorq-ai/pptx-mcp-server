@@ -74,7 +74,12 @@ from .validation import (
     check_unreadable_text,
     check_divider_collision,
     check_inconsistent_gaps,
+    check_containment,
     ValidationFinding,
+)
+from .components.container import (
+    ContainerBounds,
+    begin_container,
 )
 from .connectors import (
     add_connector,
@@ -143,7 +148,10 @@ __all__ = [
     "check_deck_overlaps", "check_slide_overlaps", "check_deck_extended",
     "check_text_overflow", "check_unreadable_text",
     "check_divider_collision", "check_inconsistent_gaps",
+    "check_containment",
     "ValidationFinding",
+    # Components
+    "ContainerBounds", "begin_container",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",

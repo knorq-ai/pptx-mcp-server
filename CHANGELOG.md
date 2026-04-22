@@ -2,6 +2,35 @@
 
 All notable changes to `pptx-mcp-server` are documented in this file.
 
+## Unreleased — container primitive (Issue #130)
+
+Foundation for the v0.6.0 shadcn-for-PPTX component layer.
+
+### New
+
+- **`engine.components.container.begin_container`** — context manager that
+  declares a bounded rectangle for a block component on a slide. Shapes
+  added inside the `with` block via the atomic primitives
+  (`_add_shape` / `_add_textbox` / `_add_image` / `add_auto_fit_textbox`)
+  are auto-tagged against the innermost active container via a thread-local
+  stack. Supports nested containers and per-container `padding`.
+- **`ContainerBounds`** dataclass — exposes `inner_bounds()` after padding.
+- **`check_containment(presentation, *, tolerance=0.01)`** — new validator
+  that flags any tagged child whose bbox exits its container's padded
+  bounds. Findings use `category="shape_outside_container"`,
+  `severity="error"`.
+- **`check_deck_extended`** now emits a `containment` key on each slide and
+  counts findings toward `summary.errors`.
+
+### Guarantees
+
+- Atomic primitive signatures are unchanged; tagging is purely additive
+  (a no-op when no container is active).
+- Registry is validator-time metadata only — never serialized into the
+  PPTX XML.
+
+652 → 668 tests passing (+16 new).
+
 ## v0.5.1 — timeline theme default
 
 Flagged by Codex gpt-5.4 v0.5.0 review: the timeline tool

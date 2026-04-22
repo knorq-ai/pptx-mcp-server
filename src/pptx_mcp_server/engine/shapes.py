@@ -21,6 +21,7 @@ from .pptx_io import (
 from .text_metrics import estimate_text_height, estimate_text_width, wrap_text
 
 from ..theme import Theme, resolve_color
+from .components.container import _register_with_active_container
 
 # DrawingML 名前空間 (OOXML 直接操作用)。
 _A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -200,6 +201,9 @@ def _add_textbox(
     )
     _apply_paragraph(p, alignment, line_spacing)
 
+    # Container auto-tagging (Issue #130). No-op when no container is active.
+    _register_with_active_container(slide, txBox, left, top, width, height)
+
     return len(list(slide.shapes)) - 1
 
 
@@ -220,7 +224,16 @@ def _add_image(slide, image_path, left, top, width=None, height=None):
     if height is not None:
         kwargs["height"] = Inches(height)
 
-    slide.shapes.add_picture(image_path, **kwargs)
+    pic = slide.shapes.add_picture(image_path, **kwargs)
+
+    # Container auto-tagging (Issue #130). Resolve effective w/h from the
+    # created picture (when caller omitted width/height, pptx fills in the
+    # native-aspect sizes) so the registry holds the true bbox.
+    emu_to_in = 1 / 914400
+    effective_w = (pic.width or 0) * emu_to_in
+    effective_h = (pic.height or 0) * emu_to_in
+    _register_with_active_container(slide, pic, left, top, effective_w, effective_h)
+
     return len(list(slide.shapes)) - 1
 
 
@@ -283,6 +296,9 @@ def _add_shape(
         p.text = text
         _apply_font(p, font_name, font_size, font_color, bold, None, None, theme=None)
         _apply_paragraph(p, alignment, None)
+
+    # Container auto-tagging (Issue #130). No-op when no container is active.
+    _register_with_active_container(slide, shape, left, top, width, height)
 
     return len(list(slide.shapes)) - 1
 
