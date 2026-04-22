@@ -1341,6 +1341,90 @@ def check_title_wrap(
     return findings
 
 
+def check_containment(
+    presentation: Presentation,
+    *,
+    tolerance: float = 0.01,
+) -> List[ValidationFinding]:
+    """宣言済み ``begin_container`` の内側に登録された shape が境界を超えて
+    いないかを検出する (Issue #130).
+
+    ``engine.components.container.begin_container`` で宣言したコンテナには、
+    ``with`` ブロック中に追加された shape (``_add_shape`` / ``_add_textbox``
+    / ``_add_image`` 経由) が ``ShapeRef`` として登録される。本関数はその
+    登録情報を走査し、子 shape の bbox がコンテナの padding 適用後内側矩形
+    から ``tolerance`` (既定 0.01 inches ≈ 0.25 mm) 以上はみ出した場合に
+    ``error`` / category ``shape_outside_container`` の finding を返す。
+
+    - 登録時点で (live shape ではなく) キャッシュされた bbox を見るため、
+      python-pptx の shape 再ロードに影響されない。shape が後から削除・
+      移動された場合でも、宣言時点のリスクは正しく報告できる。
+    - ネストコンテナは ``begin_container`` のスタック順に処理される。
+      child は innermost container に対してのみ登録されるため、inner の
+      境界を逸脱しつつ outer には収まる shape は inner 側でのみ検出される。
+    - findings の ``slide_index`` は presentation.slides 中の 0-origin
+      index。同一 slide オブジェクトが複数 index を持つ想定はしない。
+    """
+    from .components.container import iter_slide_containers
+
+    findings: List[ValidationFinding] = []
+
+    for slide_index, slide in enumerate(presentation.slides):
+        containers = list(iter_slide_containers(slide))
+        if not containers:
+            continue
+        for bounds in containers:
+            inner_left, inner_top, inner_right, inner_bottom = bounds.inner_bounds()
+            for child in bounds.children:
+                c_left = child.left
+                c_top = child.top
+                c_right = child.left + child.width
+                c_bottom = child.top + child.height
+
+                # オフセット量。正値は「外側にはみ出している距離 (inches)」。
+                dx_left = (inner_left - c_left)
+                dx_right = (c_right - inner_right)
+                dy_top = (inner_top - c_top)
+                dy_bottom = (c_bottom - inner_bottom)
+
+                overflow_parts: List[str] = []
+                if dx_left > tolerance:
+                    overflow_parts.append(f"left by {dx_left:.3f}\"")
+                if dx_right > tolerance:
+                    overflow_parts.append(f"right by {dx_right:.3f}\"")
+                if dy_top > tolerance:
+                    overflow_parts.append(f"top by {dy_top:.3f}\"")
+                if dy_bottom > tolerance:
+                    overflow_parts.append(f"bottom by {dy_bottom:.3f}\"")
+
+                if not overflow_parts:
+                    continue
+
+                shape_label = child.name or "<unnamed>"
+                overflow_desc = ", ".join(overflow_parts)
+                message = (
+                    f"shape '{shape_label}' exits container "
+                    f"'{bounds.name}' ({overflow_desc})"
+                )
+                suggested = (
+                    f"reposition or resize shape to fit within "
+                    f"[{inner_left:.2f}, {inner_top:.2f}, "
+                    f"{inner_right:.2f}, {inner_bottom:.2f}] (inches)"
+                )
+                findings.append(
+                    ValidationFinding(
+                        severity="error",
+                        slide_index=slide_index,
+                        shape_name=shape_label,
+                        category="shape_outside_container",
+                        message=message,
+                        suggested_fix=suggested,
+                    )
+                )
+
+    return findings
+
+
 def check_deck_extended(
     presentation: Presentation,
     *,
@@ -1372,6 +1456,7 @@ def check_deck_extended(
                     "inconsistent_gaps": [...],
                     "title_wrap": [...],
                     "font_not_measured": [...],  # real-font path のみ
+                    "containment": [...],        # Issue #130
                 },
                 ...
             ],
@@ -1393,6 +1478,7 @@ def check_deck_extended(
         - ``out_of_bounds`` (slide 外に出ている shape)
         - ``text_overflow`` (``check_text_overflow``)
         - ``divider_collision`` (``check_divider_collision``)
+        - ``containment`` (``check_containment`` — Issue #130)
     - ``warnings``:
         - ``unreadable_text`` (``check_unreadable_text``)
         - ``title_wrap`` (``check_title_wrap``)
@@ -1432,6 +1518,7 @@ def check_deck_extended(
         max_lines_subtitle=max_lines_subtitle,
         title_font_threshold=title_font_threshold,
     )
+    containment = check_containment(presentation)
 
     # slide index ごとに集約
     by_slide: Dict[int, Dict[str, List[Any]]] = {}
@@ -1452,6 +1539,7 @@ def check_deck_extended(
             "inconsistent_gaps": [],
             "title_wrap": [],
             "font_not_measured": [],
+            "containment": [],
         }
 
     def _place(findings: List[ValidationFinding], key: str) -> None:
@@ -1471,12 +1559,15 @@ def check_deck_extended(
     _place(divider, "divider_collision")
     _place(gaps, "inconsistent_gaps")
     _place(title_wrap, "title_wrap")
+    _place(containment, "containment")
 
     slides_out = [by_slide[i] for i in sorted(by_slide.keys())]
 
     # summary: ValidationFinding 由来 + legacy (overlaps / out_of_bounds) を集計する。
     # 詳細な severity mapping は docstring 参照。
-    errors = sum(1 for f in overflow_errors + divider if f.severity == "error")
+    errors = sum(
+        1 for f in overflow_errors + divider + containment if f.severity == "error"
+    )
     for slide_data in slides_out:
         errors += len(slide_data["overlaps"])
         errors += len(slide_data["out_of_bounds"])
