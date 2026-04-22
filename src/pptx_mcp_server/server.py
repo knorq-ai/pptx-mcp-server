@@ -333,8 +333,9 @@ def pptx_add_auto_fit_textbox(
     align: str = "left",
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
+    theme: str = None,
 ) -> str:
-    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. Returns a dict with shape_index, shape_name, and actual_font_size."""
+    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. ``theme`` (e.g. "ir", "mckinsey") resolves token color_hex (e.g. "primary") to the theme's hex. Returns a dict with shape_index, shape_name, and actual_font_size."""
     try:
         result = add_auto_fit_textbox_file(
             file_path, slide_index, text, left, top, width, height,
@@ -346,6 +347,7 @@ def pptx_add_auto_fit_textbox(
             align=align,
             vertical_anchor=vertical_anchor,
             truncate_with_ellipsis=truncate_with_ellipsis,
+            theme=theme,
         )
         # engine returns a dict {shape_index, shape_name, actual_font_size, ...}
         return _success(result)
@@ -479,13 +481,15 @@ def pptx_add_shape(
     font_color: str = None,
     bold: bool = None,
     alignment: str = None,
+    theme: str = None,
 ) -> str:
-    """Add an auto shape. Types: rectangle, rounded_rectangle, oval, triangle, diamond, chevron, arrow_right, arrow_left, arrow_up, arrow_down, callout, star_5, hexagon, pentagon. Position/size in inches. Colors as hex. WARNING: text inside shapes renders BEHIND any shapes placed on top. For labels over background shapes, use pptx_add_textbox instead."""
+    """Add an auto shape. Types: rectangle, rounded_rectangle, oval, triangle, diamond, chevron, arrow_right, arrow_left, arrow_up, arrow_down, callout, star_5, hexagon, pentagon. Position/size in inches. Colors as hex or theme token when ``theme`` is given (e.g. theme="ir", fill_color="primary"). WARNING: text inside shapes renders BEHIND any shapes placed on top. For labels over background shapes, use pptx_add_textbox instead."""
     try:
         return _success({"message": add_shape(
             file_path, slide_index, shape_type, left, top, width, height,
             fill_color, line_color, line_width, no_line,
             text, font_name, font_size, font_color, bold, alignment,
+            theme=theme,
         )})
     except Exception as e:
         return _err(e)
