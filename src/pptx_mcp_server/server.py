@@ -148,6 +148,22 @@ choice, etc.) — that belongs in the calling agent's system prompt.
 - `pptx_check_layout` catches overlaps / overflow after building.
 - `pptx_render_slide` for optional PNG preview (needs LibreOffice + poppler).
 
+## Block Components (v0.6.0+)
+Higher-level composed shapes. Each renders multiple primitives inside a
+bounded rectangle and auto-tags children for containment validation.
+- `pptx_add_kpi_row` — N cells: 9pt label / 26pt bold value / optional detail.
+- `pptx_add_metric_card_row` — N cards side-by-side: label / title / chart
+  slot (image or placeholder) / optional metrics row.
+- `pptx_add_numbered_list` — N numbered items stacked (number + caption +
+  bold title + wrapped body), optional rules between.
+- `pptx_add_section_header` — title + optional subtitle + divider rule;
+  returns `consumed_height` for placing body content below.
+- `pptx_add_page_marker` — top-right "section / P.XX" marker (fixed pos).
+- `pptx_add_slide_footer` — bottom-edge left/right footer text (fixed pos).
+All accept an optional `theme` kwarg; color fields take theme tokens
+(`"primary"`, `"text_secondary"`, `"rule_subtle"`, `"highlight_row"`) or
+raw 6-hex.
+
 ## Available Themes
 Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
 Available: `mckinsey` (default), `deloitte`, `neutral`, `ir` (Japanese IR /

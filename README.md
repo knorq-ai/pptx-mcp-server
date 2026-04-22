@@ -311,6 +311,11 @@ directly — that tool is unaffected by this gate.
 | `pptx_add_section_divider` | Add a section divider slide with dark background and accent stripes |
 | `pptx_add_kpi_row` | Add a row of N KPI cells (label / big value / optional detail) with optional card frames and theme-aware colors (block component, v0.6.0+) |
 | `pptx_add_kpi_row_legacy` | (Deprecated, removal in v0.7.0) Legacy 4-arg callout-box variant — was `pptx_add_kpi_row` prior to v0.6.0. Migrate to the block-component `pptx_add_kpi_row`. |
+| `pptx_add_metric_card_row` | N bounded cards (label/title/chart slot/metrics-row) side-by-side (block component, v0.6.0+) |
+| `pptx_add_numbered_list` | N numbered items stacked with optional rules between (block component, v0.6.0+) |
+| `pptx_add_section_header` | Title + optional subtitle + divider rule (returns `consumed_height`; block component, v0.6.0+) |
+| `pptx_add_page_marker` | Top-right "section / P.XX" marker (fixed position, v0.6.0+) |
+| `pptx_add_slide_footer` | Bottom-edge left/right footer text (fixed position, v0.6.0+) |
 | `pptx_add_bullet_block` | Add a bulleted text block with multiple items |
 | `pptx_add_responsive_card_row` | Add a row of auto-sized card shapes with title + body |
 | `pptx_add_connector` | Add a connector (straight / elbow / curve) with optional arrowheads |
