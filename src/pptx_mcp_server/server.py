@@ -972,6 +972,9 @@ def pptx_add_section_header(
             theme=theme,
         )
 
+        # Envelope invariant: result must have 'message' (#120).
+        result["message"] = f"Added section header on slide [{slide_index}]"
+
         save_pptx(prs, file_path)
 
         render_info = _auto_render(file_path, slide_index)
