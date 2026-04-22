@@ -30,12 +30,13 @@ from pptx_mcp_server.engine.validation import check_containment
 
 def test_title_subtitle_divider_creates_three_shapes(slide):
     """With subtitle → 2 textboxes + 1 filled rectangle divider."""
+    top = 0.45
     spec = SectionHeaderSpec(
         title="Market Outlook",
         subtitle="Q4 2026 — Key Takeaways",
     )
     result = add_section_header(
-        slide, spec, left=0.9, top=0.45, width=11.533,
+        slide, spec, left=0.9, top=top, width=11.533,
     )
 
     textboxes = [
@@ -51,6 +52,18 @@ def test_title_subtitle_divider_creates_three_shapes(slide):
     assert result["title_bounds"] is not None
     assert result["subtitle_bounds"] is not None
     assert result["divider_bounds"] is not None
+
+    # Absolute invariant: the divider's bottom edge must equal
+    # top + consumed_height, so callers placing body content at
+    # ``top + consumed_height`` align flush with the header's footprint.
+    divider_bottom = (
+        result["divider_bounds"]["top"] + result["divider_bounds"]["height"]
+    )
+    expected_bottom = top + result["consumed_height"]
+    assert abs(divider_bottom - expected_bottom) < 1e-6, (
+        f"divider bottom ({divider_bottom}) must equal "
+        f"top + consumed_height ({expected_bottom})"
+    )
 
 
 def test_short_title_keeps_base_font_size(slide):
@@ -87,9 +100,10 @@ def test_long_title_auto_fits_single_line(slide):
 
 def test_no_subtitle_divider_closer_to_title(slide):
     """subtitle="" → only 1 textbox; consumed_height drops by subtitle strip."""
+    top = 0.45
     spec_no_sub = SectionHeaderSpec(title="Title only", subtitle="")
     result = add_section_header(
-        slide, spec_no_sub, left=0.9, top=0.45, width=11.533,
+        slide, spec_no_sub, left=0.9, top=top, width=11.533,
     )
 
     textboxes = [
@@ -98,10 +112,11 @@ def test_no_subtitle_divider_closer_to_title(slide):
     assert len(textboxes) == 1, "no subtitle → only title textbox"
     assert result["subtitle_bounds"] is None
 
-    # Without subtitle, consumed_height excludes _SUBTITLE_H exactly.
-    # Layout: title + gap + subtitle + gap + divider (full)
-    #   vs   title + gap           + divider (no-subtitle)
-    # Delta = _SUBTITLE_H (+_INTRA_GAP_TITLE already applied either way).
+    # Without subtitle, consumed_height drops by the subtitle strip AND the
+    # title→subtitle gap (which is only relevant when a subtitle follows).
+    # Layout: title + gap_title + subtitle + gap_subtitle + divider (full)
+    #   vs   title              +            gap_subtitle + divider (no-sub)
+    # Delta = _INTRA_GAP_TITLE + _SUBTITLE_H.
     # Compute the "with subtitle" height from a matching spec to avoid
     # hard-coding internal constants in the delta check.
     full_spec = SectionHeaderSpec(title="Title only", subtitle="sub")
@@ -111,8 +126,21 @@ def test_no_subtitle_divider_closer_to_title(slide):
     )
     assert result["consumed_height"] < full_height
     assert abs(
-        (full_height - result["consumed_height"]) - _SUBTITLE_H
+        (full_height - result["consumed_height"])
+        - (_INTRA_GAP_TITLE + _SUBTITLE_H)
     ) < 1e-6
+
+    # Absolute invariant: divider bottom edge must equal top + consumed_height.
+    # This guards against the "phantom gap" regression where
+    # _compute_consumed_height and the rendered divider position disagree.
+    divider_bottom = (
+        result["divider_bounds"]["top"] + result["divider_bounds"]["height"]
+    )
+    expected_bottom = top + result["consumed_height"]
+    assert abs(divider_bottom - expected_bottom) < 1e-6, (
+        f"divider bottom ({divider_bottom}) must equal "
+        f"top + consumed_height ({expected_bottom})"
+    )
 
 
 def test_theme_ir_resolves_colors(slide):

@@ -123,10 +123,18 @@ def _compute_consumed_height(spec: SectionHeaderSpec) -> float:
 
     Broken out so tests and callers can predict layout without re-running
     the full render.
+
+    The ``_INTRA_GAP_TITLE`` (title → subtitle) spacer only applies when a
+    subtitle is present. Without a subtitle the divider sits directly below
+    the title separated by ``_INTRA_GAP_SUBTITLE`` alone. Mirroring the
+    rendering branch in :func:`add_section_header` here ensures the
+    returned ``consumed_height`` equals the actual divider bottom edge, so
+    callers that place body content at ``top + consumed_height`` align
+    flush with the header's rendered footprint.
     """
-    h = _TITLE_H + _INTRA_GAP_TITLE
+    h = _TITLE_H
     if spec.subtitle:
-        h += _SUBTITLE_H
+        h += _INTRA_GAP_TITLE + _SUBTITLE_H
     h += _INTRA_GAP_SUBTITLE + float(spec.divider_thickness)
     return h
 
