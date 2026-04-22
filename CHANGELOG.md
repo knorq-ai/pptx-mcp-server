@@ -77,6 +77,19 @@ containment. Closes #130, #131, #132, #133, #134, #135, #136.
   schema that now owns the canonical name. **The legacy tool is
   deprecated and will be removed in v0.7.0.** New callers should
   migrate to the block-component `pptx_add_kpi_row`.
+- **MCP tool tiering (#137)** — the MCP registry is now split into a
+  focused **default surface** (~20 tools: block components, high-level
+  primitives, batch build, validation / rendering, setup / inspection)
+  and an **advanced tier** (~25 tools: raw shape primitives, low-level
+  edit ops, slide-level editing, table editing primitives,
+  connectors / callouts / icons, composite helpers,
+  `pptx_add_kpi_row_legacy`). Advanced-tier tools are **hidden from
+  agents by default**; opt in via `PPTX_MCP_INCLUDE_ADVANCED=1`
+  (accepts `1` / `true` / `yes`). The advanced functions remain
+  importable for library-mode use (`from pptx_mcp_server.server
+  import pptx_add_textbox`) — only the FastMCP registration is
+  gated. Implementation lives in
+  `pptx_mcp_server._tool_registry.mcp_tool(mcp, advanced=...)`.
 
 ### Migration
 
