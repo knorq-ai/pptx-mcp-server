@@ -21,6 +21,10 @@ from .section_header import (
     SectionHeaderSpec,
     add_section_header,
 )
+from .numbered_list import (
+    NumberedItem,
+    add_numbered_list,
+)
 
 __all__ = [
     "ContainerBounds",
@@ -32,4 +36,6 @@ __all__ = [
     "add_slide_footer",
     "SectionHeaderSpec",
     "add_section_header",
+    "NumberedItem",
+    "add_numbered_list",
 ]
