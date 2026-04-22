@@ -99,6 +99,12 @@ from .components.kpi_row import (
     KPISpec,
     add_kpi_row as add_kpi_row_block,
 )
+from .components.metric_card import (
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card,
+    add_metric_card_row,
+)
 from .connectors import (
     add_connector,
     add_callout,
@@ -175,6 +181,7 @@ __all__ = [
     "SectionHeaderSpec", "add_section_header",
     "NumberedItem", "add_numbered_list",
     "KPISpec", "add_kpi_row_block",
+    "MetricEntry", "MetricCardSpec", "add_metric_card", "add_metric_card_row",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",

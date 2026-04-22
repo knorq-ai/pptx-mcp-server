@@ -30,6 +30,12 @@ from .kpi_row import (
     # Aliased to avoid collision with legacy `engine.composites.add_kpi_row`.
     add_kpi_row as add_kpi_row_block,
 )
+from .metric_card import (
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card,
+    add_metric_card_row,
+)
 
 __all__ = [
     "ContainerBounds",
@@ -45,4 +51,8 @@ __all__ = [
     "add_numbered_list",
     "KPISpec",
     "add_kpi_row_block",
+    "MetricEntry",
+    "MetricCardSpec",
+    "add_metric_card",
+    "add_metric_card_row",
 ]
