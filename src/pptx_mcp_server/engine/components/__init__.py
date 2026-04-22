@@ -11,9 +11,15 @@ from .container import (
     begin_container,
     clear_slide_containers,
 )
+from .numbered_list import (
+    NumberedItem,
+    add_numbered_list,
+)
 
 __all__ = [
     "ContainerBounds",
     "begin_container",
     "clear_slide_containers",
+    "NumberedItem",
+    "add_numbered_list",
 ]

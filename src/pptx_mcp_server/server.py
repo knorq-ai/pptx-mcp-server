@@ -111,6 +111,8 @@ from .engine import (
     TimelinePhase,
     TimelineMilestone,
     add_milestone_timeline,
+    NumberedItem,
+    add_numbered_list,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -1128,6 +1130,96 @@ def pptx_add_milestone_timeline(
         elif render_info.get("reason") != "disabled":
             result["render_warning"] = render_info
         return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_numbered_list(
+    file_path: str,
+    slide_index: int,
+    items: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    rule_between: bool = True,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a numbered list (N items stacked with optional rules between).
+
+    Each item renders as a number + caption row, bold title, and wrapped
+    body paragraph. Items divide the bounding ``height`` equally. A thin
+    horizontal rule separates consecutive items unless ``rule_between=False``
+    or the item is last.
+
+    ``items`` is a list of dicts with required keys: ``number``, ``caption``,
+    ``title``, ``body`` (all strings). ``body`` may be empty to skip the body
+    textbox for that item.
+    """
+    try:
+        if not isinstance(items, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "items must be a list of dicts.",
+                parameter="items",
+                hint="Pass a native list, e.g. [{\"number\":\"01\",\"caption\":\"...\",\"title\":\"...\",\"body\":\"...\"}].",
+            )
+
+        _known = {f.name for f in fields(NumberedItem)}
+        for i, d in enumerate(items):
+            if not isinstance(d, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"items[{i}]: must be a dict, got {type(d).__name__}.",
+                )
+            unknown = set(d.keys()) - _known
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"items[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_known)}."
+                    ),
+                )
+
+        item_objs = [NumberedItem(**d) for d in items]
+
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_numbered_list(
+            slide,
+            item_objs,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            rule_between=rule_between,
+            theme=theme,
+        )
+
+        # Envelope invariant: result must have 'message' (#120).
+        # Shape references are python-pptx objects and aren't JSON-serialisable,
+        # so we expose only the per-item bounds and top-level sizes.
+        serialised = {
+            "items": [
+                {"bounds": entry["bounds"]}
+                for entry in result["items"]
+            ],
+            "consumed_height": result["consumed_height"],
+            "consumed_width": result["consumed_width"],
+            "message": f"Added numbered list with {len(items)} item(s)",
+        }
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            serialised["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            serialised["render_warning"] = render_info
+        return _success(serialised)
     except Exception as e:
         return _err(e)
 
