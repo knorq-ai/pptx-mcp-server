@@ -2,31 +2,72 @@
 
 All notable changes to `pptx-mcp-server` are documented in this file.
 
-## Unreleased / v0.6.0 — KPIRow block component (Issue #133)
+## Unreleased / v0.6.0 — shadcn-for-PPTX block-component layer
 
-Second piece of the v0.6.0 shadcn-for-PPTX component layer: a proper
-block-component KPI row that composes atomic primitives inside a
-container, replacing the v0.2.x simple-callout variant at the canonical
-`pptx_add_kpi_row` name.
+The v0.6.0 foundation: a container-scoped block-component layer that
+composes atomic primitives inside bounded rectangles and validates
+containment. Closes #130, #131, #132, #133, #134, #135, #136.
 
 ### Added
 
-- **`pptx_add_kpi_row` MCP tool (block-component variant)** — new
-  label / big-value / optional-detail layout. Each cell stacks a 9pt
-  label, a 26pt bold single-line auto-fit value, and an optional 8pt
-  detail line. Cells are evenly distributed across `width` with `gap`
-  inches between them. Supports optional `card_fill` / `card_border`
-  frames (e.g. `card_fill="highlight_row"`, `card_border="rule_subtle"`)
-  and a `theme` kwarg for theme-token resolution. Auto-tags child shapes
-  into the active container for containment validation.
-- **`engine.components.kpi_row.KPISpec`** — dataclass spec for a single
-  cell (`label`, `value`, `detail`, `value_color`, `delta_color`
-  (reserved for forward-compat)).
-- **`add_kpi_row_block` engine export** — new alias in
-  `pptx_mcp_server.engine.components`. The underlying function is
-  `engine.components.kpi_row.add_kpi_row`; it is re-exported under the
-  `add_kpi_row_block` name to avoid a name collision with the legacy
-  `engine.composites.add_kpi_row` (still exported unchanged).
+- **Container primitive (#130)** —
+  `engine.components.container.begin_container` context manager that
+  declares a bounded rectangle for a block component on a slide. Shapes
+  added inside the `with` block via the atomic primitives
+  (`_add_shape` / `_add_textbox` / `_add_image` / `add_auto_fit_textbox`)
+  are auto-tagged against the innermost active container via a
+  thread-local stack. Supports nested containers and per-container
+  `padding`. New `ContainerBounds` dataclass exposes `inner_bounds()`
+  after padding. New `check_containment(presentation, *, tolerance=0.01)`
+  validator flags any tagged child whose bbox exits its container's
+  padded bounds (`category="shape_outside_container"`,
+  `severity="error"`). `check_deck_extended` now emits a `containment`
+  key on each slide and counts findings toward `summary.errors`.
+- **Theme-aware atomic primitives (#131)** — `add_auto_fit_textbox` and
+  `_add_shape` (plus their MCP wrappers) accept an optional
+  `theme: str | None` kwarg. Color fields resolve theme tokens
+  (`"primary"`, `"text_secondary"`, `"rule_subtle"`, etc.) through the
+  central `theme.resolve_theme_color` helper. Raw hex still works and
+  `theme=None` is fully backwards-compatible.
+- **MetricCard block component (#132)** —
+  `pptx_add_metric_card_row` MCP tool + `engine.components.metric_card`
+  (`MetricCardSpec`, `MetricEntry`, `add_metric_card`,
+  `add_metric_card_row`). N bounded cards side-by-side, each stacking
+  label / title / chart slot (image or placeholder) / optional
+  metrics row. Theme-aware colors, configurable padding, and
+  auto-tagging into the active container.
+- **KPIRow block component (#133)** — block-component
+  `pptx_add_kpi_row` MCP tool with the new label / big-value /
+  optional-detail layout. Each cell stacks a 9pt label, a 26pt bold
+  single-line auto-fit value, and an optional 8pt detail line. Cells
+  are evenly distributed across `width` with `gap` inches between them.
+  Supports optional `card_fill` / `card_border` frames (e.g.
+  `card_fill="highlight_row"`, `card_border="rule_subtle"`) and a
+  `theme` kwarg for theme-token resolution. Auto-tags child shapes into
+  the active container. New `engine.components.kpi_row.KPISpec`
+  dataclass + `add_kpi_row_block` engine export (aliased to avoid a
+  name collision with the legacy `engine.composites.add_kpi_row`).
+- **NumberedList block component (#134)** —
+  `pptx_add_numbered_list` MCP tool +
+  `engine.components.numbered_list` (`NumberedItem`,
+  `add_numbered_list`). N numbered items stacked vertically inside a
+  bounded rectangle, each rendering number + caption row, bold title,
+  and wrapped body paragraph. Optional horizontal rules between items
+  (`rule_between=True` by default).
+- **PageMarker + SlideFooter block components (#135)** —
+  `pptx_add_page_marker` (top-right "section / P.XX" marker) and
+  `pptx_add_slide_footer` (bottom-edge left/right footer text) MCP
+  tools. Both use fixed conventional position and accept a `theme`
+  kwarg for default `text_secondary` color-token resolution. Engine
+  specs `PageMarkerSpec` / `SlideFooterSpec` live in
+  `engine.components.markers`.
+- **SectionHeader block component (#136)** —
+  `pptx_add_section_header` MCP tool +
+  `engine.components.section_header` (`SectionHeaderSpec`,
+  `add_section_header`). Title + optional subtitle + full-width
+  divider rule. Title/subtitle use single-line auto-fit with ellipsis
+  truncation. Returns `title_bounds`, `subtitle_bounds`,
+  `divider_bounds`, and `consumed_height` for downstream placement.
 
 ### Changed (breaking — MCP surface)
 
@@ -34,8 +75,8 @@ container, replacing the v0.2.x simple-callout variant at the canonical
   `pptx_add_kpi_row_legacy`** — callers of the 4-arg signature
   `(file_path, slide_index, kpis, y)` will fail against the new 7+ arg
   schema that now owns the canonical name. **The legacy tool is
-  deprecated and will be removed in v0.7.0.** New callers should migrate
-  to the block-component `pptx_add_kpi_row`.
+  deprecated and will be removed in v0.7.0.** New callers should
+  migrate to the block-component `pptx_add_kpi_row`.
 
 ### Migration
 
@@ -52,39 +93,13 @@ pptx_add_kpi_row_legacy(file_path, slide_index, kpis=[...], y=2.5)
 
 ### Non-breaking
 
-- `engine.composites.add_kpi_row` (library-level) is unchanged; only the
-  MCP tool name moved.
+- `engine.composites.add_kpi_row` (library-level) is unchanged; only
+  the MCP tool name moved.
 - The legacy tool's runtime behavior is identical — the rename is
   surface-only so migration is a one-line rename, not a refactor.
-
-## Unreleased — container primitive (Issue #130)
-
-Foundation for the v0.6.0 shadcn-for-PPTX component layer.
-
-### New
-
-- **`engine.components.container.begin_container`** — context manager that
-  declares a bounded rectangle for a block component on a slide. Shapes
-  added inside the `with` block via the atomic primitives
-  (`_add_shape` / `_add_textbox` / `_add_image` / `add_auto_fit_textbox`)
-  are auto-tagged against the innermost active container via a thread-local
-  stack. Supports nested containers and per-container `padding`.
-- **`ContainerBounds`** dataclass — exposes `inner_bounds()` after padding.
-- **`check_containment(presentation, *, tolerance=0.01)`** — new validator
-  that flags any tagged child whose bbox exits its container's padded
-  bounds. Findings use `category="shape_outside_container"`,
-  `severity="error"`.
-- **`check_deck_extended`** now emits a `containment` key on each slide and
-  counts findings toward `summary.errors`.
-
-### Guarantees
-
-- Atomic primitive signatures are unchanged; tagging is purely additive
-  (a no-op when no container is active).
-- Registry is validator-time metadata only — never serialized into the
-  PPTX XML.
-
-652 → 668 tests passing (+16 new).
+- Atomic primitive signatures are unchanged; container tagging is
+  purely additive (no-op when no container is active). Registry is
+  validator-time metadata only — never serialized into the PPTX XML.
 
 ## v0.5.1 — timeline theme default
 
