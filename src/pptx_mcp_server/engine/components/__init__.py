@@ -11,9 +11,15 @@ from .container import (
     begin_container,
     clear_slide_containers,
 )
+from .section_header import (
+    SectionHeaderSpec,
+    add_section_header,
+)
 
 __all__ = [
     "ContainerBounds",
     "begin_container",
     "clear_slide_containers",
+    "SectionHeaderSpec",
+    "add_section_header",
 ]

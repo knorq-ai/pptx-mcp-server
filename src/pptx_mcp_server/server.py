@@ -106,6 +106,8 @@ from .engine import (
     check_deck_extended,
     CardSpec,
     add_responsive_card_row,
+    SectionHeaderSpec,
+    add_section_header,
     TableColumnSpec,
     add_data_table,
     TimelinePhase,
@@ -871,6 +873,60 @@ def pptx_add_responsive_card_row(
 
         render_info = _auto_render(file_path, slide_index)
         # result は既に richer dict — auto-render の結果を同じ dict にマージ。
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def pptx_add_section_header(
+    file_path: str,
+    slide_index: int,
+    title: str,
+    subtitle: Optional[str] = None,
+    left: float = 0.9,
+    top: float = 0.45,
+    width: float = 11.533,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a section header (title + optional subtitle + divider rule).
+
+    Renders a vertically-stacked block comprising a bold title, an optional
+    subtitle beneath it, and a full-width hairline divider. Title and
+    subtitle use single-line auto-fit (no wrap) with ellipsis truncation
+    so long strings do not spill to a second row.
+
+    Defaults target the McKinsey 13.333×7.5 slide layout: the header sits
+    near the top of the slide with ~0.9" left/right margins.
+
+    Returns JSON with ``title_bounds``, ``subtitle_bounds`` (may be
+    ``None``), ``divider_bounds``, and ``consumed_height`` — use the last
+    value to place body content directly below the header.
+    """
+    try:
+        spec = SectionHeaderSpec(
+            title=title,
+            subtitle=subtitle or "",
+        )
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_section_header(
+            slide,
+            spec,
+            left=left,
+            top=top,
+            width=width,
+            theme=theme,
+        )
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
         if render_info.get("rendered"):
             result["preview_path"] = render_info.get("preview_path")
         elif render_info.get("reason") != "disabled":
