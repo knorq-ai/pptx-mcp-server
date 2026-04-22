@@ -224,7 +224,7 @@ Affected tools (and replaced param names):
 | `pptx_build_slide` | `spec_json: str` | `spec: dict` |
 | `pptx_build_deck` | `slides_json: str` | `slides: list[dict]` |
 | `pptx_add_chart` | `chart_json: str` | `chart: dict` |
-| `pptx_add_kpi_row` | `kpis_json: str` | `kpis: list[dict]` |
+| `pptx_add_kpi_row_legacy` (was `pptx_add_kpi_row` pre-v0.6.0; see #133) | `kpis_json: str` | `kpis: list[dict]` |
 | `pptx_add_table` | `rows_json: str` + `col_widths_json: str` | `rows: list[list]` + `col_widths: list[float] \| None` |
 | `pptx_add_bullet_block` | `items_json: str` | `bullets: list[str]` |
 | `pptx_edit_table_cells` | `edits_json: str` | `edits: list[dict]` |
@@ -233,7 +233,8 @@ Affected tools (and replaced param names):
 
 > **BREAKING CHANGE (v0.2.0).** Composite tools
 > (`pptx_add_content_slide`, `pptx_build_slide`, `pptx_build_deck`,
-> `pptx_add_kpi_row`, `pptx_add_bullet_block`, `pptx_add_section_divider`,
+> `pptx_add_kpi_row` (renamed `pptx_add_kpi_row_legacy` in v0.6.0, see #133),
+> `pptx_add_bullet_block`, `pptx_add_section_divider`,
 > `pptx_add_responsive_card_row`, `pptx_add_connector`, `pptx_add_callout`,
 > `pptx_add_chart`, `pptx_add_icon`) previously forked LibreOffice to render
 > a PNG preview after every successful edit (~1.5s, no timeout, no off-switch).
@@ -308,7 +309,13 @@ directly — that tool is unaffected by this gate.
 | `pptx_build_slide` | Build a single slide from a JSON spec |
 | `pptx_add_content_slide` | Add a content slide with action title, divider, footnote, page number |
 | `pptx_add_section_divider` | Add a section divider slide with dark background and accent stripes |
-| `pptx_add_kpi_row` | Add a row of KPI callout boxes |
+| `pptx_add_kpi_row` | Add a row of N KPI cells (label / big value / optional detail) with optional card frames and theme-aware colors (block component, v0.6.0+) |
+| `pptx_add_kpi_row_legacy` | (Deprecated, removal in v0.7.0) Legacy 4-arg callout-box variant — was `pptx_add_kpi_row` prior to v0.6.0. Migrate to the block-component `pptx_add_kpi_row`. |
+| `pptx_add_metric_card_row` | N bounded cards (label/title/chart slot/metrics-row) side-by-side (block component, v0.6.0+) |
+| `pptx_add_numbered_list` | N numbered items stacked with optional rules between (block component, v0.6.0+) |
+| `pptx_add_section_header` | Title + optional subtitle + divider rule (returns `consumed_height`; block component, v0.6.0+) |
+| `pptx_add_page_marker` | Top-right "section / P.XX" marker (fixed position, v0.6.0+) |
+| `pptx_add_slide_footer` | Bottom-edge left/right footer text (fixed position, v0.6.0+) |
 | `pptx_add_bullet_block` | Add a bulleted text block with multiple items |
 | `pptx_add_responsive_card_row` | Add a row of auto-sized card shapes with title + body |
 | `pptx_add_connector` | Add a connector (straight / elbow / curve) with optional arrowheads |
@@ -323,6 +330,54 @@ directly — that tool is unaffected by this gate.
 |------|-------------|
 | `pptx_check_layout` | Validate deck layouts: overlaps, out-of-bounds, overflow, readability |
 | `pptx_render_slide` | Render slide(s) to PNG via LibreOffice for visual verification |
+
+## MCP tool tiers (v0.6.0+)
+
+The MCP surface is split into two tiers (#137) so agents see a focused,
+productive default catalog and only opt into low-level primitives when
+explicitly needed.
+
+**Default surface (~20 tools)** — always registered. Covers
+setup / inspection (`pptx_create`, `pptx_get_info`, `pptx_read_slide`,
+`pptx_add_slide`), block components
+(`pptx_add_section_header`, `pptx_add_kpi_row`,
+`pptx_add_metric_card_row`, `pptx_add_numbered_list`,
+`pptx_add_page_marker`, `pptx_add_slide_footer`), high-level primitives
+(`pptx_add_data_table`, `pptx_add_responsive_card_row`,
+`pptx_add_milestone_timeline`, `pptx_add_flex_container`,
+`pptx_add_chart`, `pptx_add_image`), batch build (`pptx_build_slide`,
+`pptx_build_deck`), and validation / rendering (`pptx_check_layout`,
+`pptx_render_slide`).
+
+**Advanced tier (~25 tools)** — hidden from the MCP catalog unless
+opted in. Covers raw shape primitives (`pptx_add_textbox`,
+`pptx_add_shape`, `pptx_add_auto_fit_textbox`), low-level edit ops
+(`pptx_edit_text`, `pptx_add_paragraph`, `pptx_delete_shape`,
+`pptx_list_shapes`, `pptx_format_shape`), slide-level editing
+(`pptx_set_dimensions`, `pptx_set_slide_background`,
+`pptx_move_slide`, `pptx_delete_slide`, `pptx_duplicate_slide`),
+table-editing primitives (`pptx_add_table`, `pptx_edit_table_cell`,
+`pptx_edit_table_cells`, `pptx_format_table`),
+connectors / callouts / icons (`pptx_add_connector`, `pptx_add_callout`,
+`pptx_add_icon`, `pptx_list_icons`), composite helpers
+(`pptx_add_section_divider`, `pptx_add_content_slide`,
+`pptx_add_bullet_block`), and the deprecated `pptx_add_kpi_row_legacy`.
+
+### Enabling the advanced tier
+
+Set the env var before starting the server:
+
+```bash
+PPTX_MCP_INCLUDE_ADVANCED=1 python -m pptx_mcp_server
+```
+
+The var accepts `1`, `true`, or `yes` (case-insensitive). It is read
+**once at import**, so restart the server after changing it.
+
+Advanced-tier tools remain importable as regular Python functions even
+when the gate is off — `from pptx_mcp_server.server import
+pptx_add_textbox` keeps working for library-mode callers and tests;
+only FastMCP registration is gated.
 
 ## Dependencies
 

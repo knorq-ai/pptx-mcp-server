@@ -8,8 +8,28 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches
 
+from pptx_mcp_server.engine.components.container import clear_container_registry
 from pptx_mcp_server.theme import MCKINSEY, Theme
 from pptx_mcp_server.engine.pptx_io import save_pptx
+
+
+@pytest.fixture(autouse=True)
+def _isolated_container_registry():
+    """Ensure every test starts and ends with a clean container registry.
+
+    The v0.6.0 container primitive (#130) uses a module-level registry to
+    associate child shapes with their parent container for post-hoc
+    containment validation. Without explicit cleanup, state from one test
+    can leak into the next — especially tests that set up entries but
+    never call ``check_containment`` (which otherwise consumes them).
+
+    Clearing is a no-op for tests that don't use containers, so this is
+    safe to apply globally. Previously lived as 5 duplicated autouse
+    fixtures across component test modules (Task G cleanup).
+    """
+    clear_container_registry()
+    yield
+    clear_container_registry()
 
 
 @pytest.fixture

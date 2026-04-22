@@ -74,7 +74,36 @@ from .validation import (
     check_unreadable_text,
     check_divider_collision,
     check_inconsistent_gaps,
+    check_containment,
     ValidationFinding,
+)
+from .components.container import (
+    ContainerBounds,
+    begin_container,
+)
+from .components.markers import (
+    PageMarkerSpec,
+    SlideFooterSpec,
+    add_page_marker,
+    add_slide_footer,
+)
+from .components.section_header import (
+    SectionHeaderSpec,
+    add_section_header,
+)
+from .components.numbered_list import (
+    NumberedItem,
+    add_numbered_list,
+)
+from .components.kpi_row import (
+    KPISpec,
+    add_kpi_row as add_kpi_row_block,
+)
+from .components.metric_card import (
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card,
+    add_metric_card_row,
 )
 from .connectors import (
     add_connector,
@@ -143,7 +172,16 @@ __all__ = [
     "check_deck_overlaps", "check_slide_overlaps", "check_deck_extended",
     "check_text_overflow", "check_unreadable_text",
     "check_divider_collision", "check_inconsistent_gaps",
+    "check_containment",
     "ValidationFinding",
+    # Components
+    "ContainerBounds", "begin_container",
+    "PageMarkerSpec", "SlideFooterSpec",
+    "add_page_marker", "add_slide_footer",
+    "SectionHeaderSpec", "add_section_header",
+    "NumberedItem", "add_numbered_list",
+    "KPISpec", "add_kpi_row_block",
+    "MetricEntry", "MetricCardSpec", "add_metric_card", "add_metric_card_row",
     # Composites
     "add_content_slide", "add_section_divider", "add_kpi_row", "add_bullet_block",
     "build_slide", "build_deck",

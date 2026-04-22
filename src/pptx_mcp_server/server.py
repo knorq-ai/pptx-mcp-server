@@ -64,6 +64,11 @@ from ._render import (
     _auto_render_timeout,
     _run_auto_render,
 )
+from ._tool_registry import (
+    advanced_tool_names,
+    is_advanced_enabled,
+    mcp_tool,
+)
 from .engine import (
     EngineError,
     ErrorCode,
@@ -106,11 +111,24 @@ from .engine import (
     check_deck_extended,
     CardSpec,
     add_responsive_card_row,
+    SectionHeaderSpec,
+    add_section_header,
     TableColumnSpec,
     add_data_table,
     TimelinePhase,
     TimelineMilestone,
     add_milestone_timeline,
+    PageMarkerSpec,
+    SlideFooterSpec,
+    add_page_marker,
+    add_slide_footer,
+    NumberedItem,
+    add_numbered_list,
+    KPISpec,
+    add_kpi_row_block,
+    MetricEntry,
+    MetricCardSpec,
+    add_metric_card_row,
 )
 from .engine.pptx_io import open_pptx, save_pptx, _get_slide
 
@@ -135,6 +153,22 @@ choice, etc.) — that belongs in the calling agent's system prompt.
 - `pptx_check_layout` catches overlaps / overflow after building.
 - `pptx_render_slide` for optional PNG preview (needs LibreOffice + poppler).
 
+## Block Components (v0.6.0+)
+Higher-level composed shapes. Each renders multiple primitives inside a
+bounded rectangle and auto-tags children for containment validation.
+- `pptx_add_kpi_row` — N cells: 9pt label / 26pt bold value / optional detail.
+- `pptx_add_metric_card_row` — N cards side-by-side: label / title / chart
+  slot (image or placeholder) / optional metrics row.
+- `pptx_add_numbered_list` — N numbered items stacked (number + caption +
+  bold title + wrapped body), optional rules between.
+- `pptx_add_section_header` — title + optional subtitle + divider rule;
+  returns `consumed_height` for placing body content below.
+- `pptx_add_page_marker` — top-right "section / P.XX" marker (fixed pos).
+- `pptx_add_slide_footer` — bottom-edge left/right footer text (fixed pos).
+All accept an optional `theme` kwarg; color fields take theme tokens
+(`"primary"`, `"text_secondary"`, `"rule_subtle"`, `"highlight_row"`) or
+raw 6-hex.
+
 ## Available Themes
 Pass `"theme": "<name>"` in slide specs for `build_slide` / `build_deck`.
 Available: `mckinsey` (default), `deloitte`, `neutral`, `ir` (Japanese IR /
@@ -158,6 +192,38 @@ timeout/failure. `pptx_check_layout(detailed=True)` embeds its `slides` /
 `SLIDE_NOT_FOUND`, `SHAPE_NOT_FOUND`, `INDEX_OUT_OF_RANGE`, `INVALID_PPTX`,
 `TABLE_ERROR`, `CHART_ERROR`, `INTERNAL_ERROR`. On failure, read `error.hint`
 (if present) for recovery guidance.
+
+## Tool Tiers (v0.6.0+; #137)
+The MCP surface is split into two tiers to keep the default agent-facing
+catalog focused on the productive block-component + batch layer:
+
+- **Default surface** — setup/inspection (`pptx_create`, `pptx_get_info`,
+  `pptx_read_slide`, `pptx_add_slide`), block components
+  (`pptx_add_section_header`, `pptx_add_kpi_row`,
+  `pptx_add_metric_card_row`, `pptx_add_numbered_list`,
+  `pptx_add_page_marker`, `pptx_add_slide_footer`), high-level
+  primitives (`pptx_add_data_table`, `pptx_add_responsive_card_row`,
+  `pptx_add_milestone_timeline`, `pptx_add_flex_container`,
+  `pptx_add_chart`, `pptx_add_image`), batch build (`pptx_build_slide`,
+  `pptx_build_deck`), and validation/rendering (`pptx_check_layout`,
+  `pptx_render_slide`).
+- **Advanced tier** — raw shape primitives (`pptx_add_textbox`,
+  `pptx_add_shape`, `pptx_add_auto_fit_textbox`), low-level edit ops
+  (`pptx_edit_text`, `pptx_add_paragraph`, `pptx_delete_shape`,
+  `pptx_list_shapes`, `pptx_format_shape`), slide-level editing
+  (`pptx_set_dimensions`, `pptx_set_slide_background`,
+  `pptx_move_slide`, `pptx_delete_slide`, `pptx_duplicate_slide`),
+  table editing primitives (`pptx_add_table`, `pptx_edit_table_cell`,
+  `pptx_edit_table_cells`, `pptx_format_table`), connectors / callouts
+  / icons (`pptx_add_connector`, `pptx_add_callout`, `pptx_add_icon`,
+  `pptx_list_icons`), composite helpers (`pptx_add_section_divider`,
+  `pptx_add_content_slide`, `pptx_add_bullet_block`), and the legacy
+  `pptx_add_kpi_row_legacy`.
+
+Advanced-tier tools are **hidden from the MCP catalog by default**.
+Opt in by setting `PPTX_MCP_INCLUDE_ADVANCED=1` in the environment
+before the server starts (accepts `1`/`true`/`yes`). The env var is
+read once at import, so restart the server after changing it.
 
 ## Auto-Render (opt-in; OFF by default)
 Enable via `PPTX_MCP_AUTO_RENDER=1`; timeout (seconds) via
@@ -187,7 +253,7 @@ def _auto_render(file_path: str, slide_index: int) -> Dict[str, Any]:
 
 # --- Presentation ------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_create(
     file_path: str,
     width_inches: float = 13.333,
@@ -200,7 +266,7 @@ def pptx_create(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_get_info(file_path: str) -> str:
     """Get presentation overview: slide count, dimensions, shape summaries."""
     try:
@@ -209,7 +275,7 @@ def pptx_get_info(file_path: str) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_read_slide(file_path: str, slide_index: int) -> str:
     """Read detailed content of a slide -- all shapes, text, tables."""
     try:
@@ -218,7 +284,7 @@ def pptx_read_slide(file_path: str, slide_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_list_shapes(file_path: str, slide_index: int) -> str:
     """List all shapes on a slide with indices, types, positions, text preview."""
     try:
@@ -229,7 +295,7 @@ def pptx_list_shapes(file_path: str, slide_index: int) -> str:
 
 # --- Slides -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
     """Add a new slide. Layout 6 = Blank (most common)."""
     try:
@@ -238,7 +304,7 @@ def pptx_add_slide(file_path: str, layout_index: int = 6) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
     """Move a slide from one position to another. 0-based indices."""
     try:
@@ -247,7 +313,7 @@ def pptx_move_slide(file_path: str, from_index: int, to_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_delete_slide(file_path: str, slide_index: int) -> str:
     """Delete a slide by 0-based index."""
     try:
@@ -256,7 +322,7 @@ def pptx_delete_slide(file_path: str, slide_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
     """Duplicate a slide (appended at end)."""
     try:
@@ -265,7 +331,7 @@ def pptx_duplicate_slide(file_path: str, slide_index: int) -> str:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> str:
     """Set solid background color for a slide. Color as hex e.g. '051C2C' (without #)."""
     try:
@@ -274,7 +340,7 @@ def pptx_set_slide_background(file_path: str, slide_index: int, color: str) -> s
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_set_dimensions(file_path: str, width: float, height: float) -> str:
     """Set presentation slide dimensions in inches (applies to all slides)."""
     try:
@@ -285,7 +351,7 @@ def pptx_set_dimensions(file_path: str, width: float, height: float) -> str:
 
 # --- Textboxes ----------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_textbox(
     file_path: str,
     slide_index: int,
@@ -316,7 +382,7 @@ def pptx_add_textbox(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_auto_fit_textbox(
     file_path: str,
     slide_index: int,
@@ -333,8 +399,9 @@ def pptx_add_auto_fit_textbox(
     align: str = "left",
     vertical_anchor: str = "top",
     truncate_with_ellipsis: bool = True,
+    theme: str = None,
 ) -> str:
-    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. Returns a dict with shape_index, shape_name, and actual_font_size."""
+    """Add a textbox that auto-shrinks font size to fit a fixed box. Starts from font_size_pt and steps down 0.5pt until text fits height, or reaches min_size_pt. If still overflowing at min and truncate_with_ellipsis=True, trailing chars are replaced with an ellipsis. ``theme`` (e.g. "ir", "mckinsey") resolves token color_hex (e.g. "primary") to the theme's hex. Returns a dict with shape_index, shape_name, and actual_font_size."""
     try:
         result = add_auto_fit_textbox_file(
             file_path, slide_index, text, left, top, width, height,
@@ -346,6 +413,7 @@ def pptx_add_auto_fit_textbox(
             align=align,
             vertical_anchor=vertical_anchor,
             truncate_with_ellipsis=truncate_with_ellipsis,
+            theme=theme,
         )
         # engine returns a dict {shape_index, shape_name, actual_font_size, ...}
         return _success(result)
@@ -353,7 +421,7 @@ def pptx_add_auto_fit_textbox(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_flex_container(
     file_path: str,
     slide_index: int,
@@ -405,7 +473,7 @@ def pptx_add_flex_container(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_edit_text(
     file_path: str,
     slide_index: int,
@@ -432,7 +500,7 @@ def pptx_edit_text(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_paragraph(
     file_path: str,
     slide_index: int,
@@ -460,7 +528,7 @@ def pptx_add_paragraph(
 
 # --- Shapes -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_shape(
     file_path: str,
     slide_index: int,
@@ -479,19 +547,21 @@ def pptx_add_shape(
     font_color: str = None,
     bold: bool = None,
     alignment: str = None,
+    theme: str = None,
 ) -> str:
-    """Add an auto shape. Types: rectangle, rounded_rectangle, oval, triangle, diamond, chevron, arrow_right, arrow_left, arrow_up, arrow_down, callout, star_5, hexagon, pentagon. Position/size in inches. Colors as hex. WARNING: text inside shapes renders BEHIND any shapes placed on top. For labels over background shapes, use pptx_add_textbox instead."""
+    """Add an auto shape. Types: rectangle, rounded_rectangle, oval, triangle, diamond, chevron, arrow_right, arrow_left, arrow_up, arrow_down, callout, star_5, hexagon, pentagon. Position/size in inches. Colors as hex or theme token when ``theme`` is given (e.g. theme="ir", fill_color="primary"). WARNING: text inside shapes renders BEHIND any shapes placed on top. For labels over background shapes, use pptx_add_textbox instead."""
     try:
         return _success({"message": add_shape(
             file_path, slide_index, shape_type, left, top, width, height,
             fill_color, line_color, line_width, no_line,
             text, font_name, font_size, font_color, bold, alignment,
+            theme=theme,
         )})
     except Exception as e:
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_image(
     file_path: str,
     slide_index: int,
@@ -508,7 +578,7 @@ def pptx_add_image(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_delete_shape(file_path: str, slide_index: int, shape_index: int) -> str:
     """Delete a shape from a slide by its 0-based index."""
     try:
@@ -517,7 +587,7 @@ def pptx_delete_shape(file_path: str, slide_index: int, shape_index: int) -> str
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_format_shape(
     file_path: str,
     slide_index: int,
@@ -546,7 +616,7 @@ def pptx_format_shape(
 
 # --- Tables -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_table(
     file_path: str,
     slide_index: int,
@@ -606,7 +676,7 @@ def pptx_add_table(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_edit_table_cell(
     file_path: str,
     slide_index: int,
@@ -630,7 +700,7 @@ def pptx_edit_table_cell(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_edit_table_cells(
     file_path: str,
     slide_index: int,
@@ -656,7 +726,7 @@ def pptx_edit_table_cells(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_format_table(
     file_path: str,
     slide_index: int,
@@ -679,7 +749,7 @@ def pptx_format_table(
 
 # --- Composites ---------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_content_slide(
     file_path: str,
     title: str,
@@ -696,7 +766,7 @@ def pptx_add_content_slide(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_section_divider(
     file_path: str,
     title: str,
@@ -712,19 +782,40 @@ def pptx_add_section_divider(
         return _err(e)
 
 
-@mcp.tool()
-def pptx_add_kpi_row(
+@mcp_tool(mcp, advanced=True)
+def pptx_add_kpi_row_legacy(
     file_path: str,
     slide_index: int,
     kpis: List[Dict[str, Any]],
     y: float,
 ) -> str:
-    """Add a row of KPI callout boxes.
+    """(Deprecated) Add a row of KPI callout boxes.
 
     ``kpis``: list of dicts, e.g. ``[{"value":"107.8M","label":"Revenue"}]``.
     ``y``: vertical position in inches.
     v0.3.0 (#97): was ``kpis_json: str``.
     Auto-renders a preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+
+    DEPRECATED (v0.6.0, #133): this is the legacy simple-callout variant.
+    New callers should prefer the block-component ``pptx_add_kpi_row``,
+    which supports theme tokens, optional card frames, detail lines, and
+    container-aware containment validation. This tool will be removed in
+    v0.7.0.
+
+    Migration to pptx_add_kpi_row (v0.6.0)::
+
+        # Before (legacy):
+        pptx_add_kpi_row(file_path, slide_index, kpis=[...], y=2.5)
+        # After:
+        pptx_add_kpi_row(
+            file_path, slide_index, kpis=[...],
+            left=0.5, top=2.5, width=12.0,
+        )
+
+    The new tool takes ``left`` / ``top`` / ``width`` (and optional
+    ``height``, ``gap``, ``card_fill``, ``card_border``, ``theme``) in
+    place of the single ``y`` parameter. Each KPI dict may now also carry
+    ``detail`` and ``value_color`` fields.
     """
     try:
         if not isinstance(kpis, list):
@@ -742,7 +833,7 @@ def pptx_add_kpi_row(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_bullet_block(
     file_path: str,
     slide_index: int,
@@ -774,7 +865,7 @@ def pptx_add_bullet_block(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_responsive_card_row(
     file_path: str,
     slide_index: int,
@@ -876,7 +967,161 @@ def pptx_add_responsive_card_row(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
+def pptx_add_section_header(
+    file_path: str,
+    slide_index: int,
+    title: str,
+    subtitle: Optional[str] = None,
+    left: float = 0.9,
+    top: float = 0.45,
+    width: float = 11.533,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a section header (title + optional subtitle + divider rule).
+
+    Renders a vertically-stacked block comprising a bold title, an optional
+    subtitle beneath it, and a full-width hairline divider. Title and
+    subtitle use single-line auto-fit (no wrap) with ellipsis truncation
+    so long strings do not spill to a second row.
+
+    Defaults target the McKinsey 13.333×7.5 slide layout: the header sits
+    near the top of the slide with ~0.9" left/right margins.
+
+    Returns JSON with ``title_bounds``, ``subtitle_bounds`` (may be
+    ``None``), ``divider_bounds``, and ``consumed_height`` — use the last
+    value to place body content directly below the header.
+    """
+    try:
+        spec = SectionHeaderSpec(
+            title=title,
+            subtitle=subtitle or "",
+        )
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_section_header(
+            slide,
+            spec,
+            left=left,
+            top=top,
+            width=width,
+            theme=theme,
+        )
+
+        # Envelope invariant: result must have 'message' (#120).
+        result["message"] = f"Added section header on slide [{slide_index}]"
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp_tool(mcp)
+def pptx_add_kpi_row(
+    file_path: str,
+    slide_index: int,
+    kpis: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    height: float = 0.95,
+    gap: float = 0.15,
+    card_fill: Optional[str] = None,
+    card_border: Optional[str] = None,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a row of N KPI cells (label / big value / optional detail).
+
+    Each cell stacks a 9pt label, a 26pt bold value (single-line auto-fit),
+    and an optional 8pt detail line. Cells are evenly distributed across
+    ``width`` with ``gap`` inches between them; ``n == 1`` consumes full
+    width with no gap.
+
+    ``kpis``: list of dicts with keys ``label``, ``value``, ``detail``
+    (optional), ``value_color`` (theme token or hex, default ``"primary"``),
+    ``delta_color`` (reserved for future delta variant).
+
+    When ``card_fill`` or ``card_border`` is provided the component draws
+    a rectangle per cell behind the text (e.g. ``card_fill="highlight_row"``
+    for a cream band, ``card_border="rule_subtle"`` for a thin frame).
+
+    ``theme``: theme registry key (e.g. ``"ir"``, ``"mckinsey"``). When
+    omitted, built-in fallback colors are used for tokens. Auto-renders a
+    preview PNG ONLY when PPTX_MCP_AUTO_RENDER=1.
+    """
+    try:
+        if not isinstance(kpis, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "kpis must be a list of dicts.",
+                parameter="kpis",
+                hint='Pass a native list, e.g. [{"label":"Revenue","value":"107.8M"}].',
+                issue=133,
+            )
+        # Strict-key validation per dict — surfaces typos with an actionable
+        # message rather than letting KPISpec(**d) raise a bare TypeError.
+        _kpi_known_keys = {f.name for f in fields(KPISpec)}
+        for i, spec in enumerate(kpis):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"kpis[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            unknown = set(spec.keys()) - _kpi_known_keys
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"kpis[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_kpi_known_keys)}."
+                    ),
+                )
+        kpi_objs = [KPISpec(**d) for d in kpis]
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        row_result = add_kpi_row_block(
+            slide,
+            kpi_objs,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            gap=gap,
+            theme=theme,
+            card_fill=card_fill,
+            card_border=card_border,
+        )
+
+        # Serialize before save so a broken result dict doesn't corrupt the
+        # file on disk (mirrors #34 pattern used by pptx_add_responsive_card_row).
+        result: Dict[str, Any] = {
+            "message": f"Added KPI row with {len(kpi_objs)} cells on slide [{slide_index}]",
+            "cells": [{"bounds": c["bounds"]} for c in row_result["cells"]],
+            "consumed_height": row_result["consumed_height"],
+        }
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp_tool(mcp)
 def pptx_add_data_table(
     file_path: str,
     slide_index: int,
@@ -1006,7 +1251,7 @@ def pptx_add_data_table(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_milestone_timeline(
     file_path: str,
     slide_index: int,
@@ -1128,9 +1373,301 @@ def pptx_add_milestone_timeline(
         return _err(e)
 
 
+# --- Markers (page marker / slide footer) -------------------------
+
+@mcp_tool(mcp)
+def pptx_add_page_marker(
+    file_path: str,
+    slide_index: int,
+    section: str,
+    page: str,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a top-right page marker (section line + page line) to a slide.
+
+    Uses fixed conventional position (right margin 0.5", top 0.35"),
+    two right-aligned single-line textboxes stacked vertically.
+    ``theme`` resolves the default ``text_secondary`` color token when set
+    (e.g. ``theme="ir"``).
+
+    Returns ``{"bounds": {"left","top","width","height"}}``.
+    """
+    try:
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+        sw = prs.slide_width / 914400
+        sh = prs.slide_height / 914400
+        spec = PageMarkerSpec(section=section, page=page)
+        result = add_page_marker(
+            slide, spec,
+            slide_width=sw, slide_height=sh,
+            theme=theme,
+        )
+        save_pptx(prs, file_path)
+        return _success({
+            "message": f"Added page marker to slide {slide_index}",
+            "bounds": result["bounds"],
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp_tool(mcp)
+def pptx_add_slide_footer(
+    file_path: str,
+    slide_index: int,
+    left_text: str = "IR Presentation · FY Q3",
+    right_text: Optional[str] = None,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a bottom-of-slide footer (left + optional right textboxes).
+
+    Uses fixed conventional position (bottom offset 0.4", side margin 0.5").
+    If ``right_text`` is ``None`` or empty, only the left textbox is drawn.
+    ``theme`` resolves the default ``text_secondary`` color token when set.
+
+    Returns ``{"bounds": {"left","top","width","height"}}``.
+    """
+    try:
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+        sw = prs.slide_width / 914400
+        sh = prs.slide_height / 914400
+        spec = SlideFooterSpec(
+            left_text=left_text,
+            right_text=right_text or "",
+        )
+        result = add_slide_footer(
+            slide, spec,
+            slide_width=sw, slide_height=sh,
+            theme=theme,
+        )
+        save_pptx(prs, file_path)
+        return _success({
+            "message": f"Added slide footer to slide {slide_index}",
+            "bounds": result["bounds"],
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp_tool(mcp)
+def pptx_add_numbered_list(
+    file_path: str,
+    slide_index: int,
+    items: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    rule_between: bool = True,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a numbered list (N items stacked with optional rules between).
+
+    Each item renders as a number + caption row, bold title, and wrapped
+    body paragraph. Items divide the bounding ``height`` equally. A thin
+    horizontal rule separates consecutive items unless ``rule_between=False``
+    or the item is last.
+
+    ``items`` is a list of dicts with required keys: ``number``, ``caption``,
+    ``title``, ``body`` (all strings). ``body`` may be empty to skip the body
+    textbox for that item.
+    """
+    try:
+        if not isinstance(items, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "items must be a list of dicts.",
+                parameter="items",
+                hint="Pass a native list, e.g. [{\"number\":\"01\",\"caption\":\"...\",\"title\":\"...\",\"body\":\"...\"}].",
+            )
+
+        _known = {f.name for f in fields(NumberedItem)}
+        for i, d in enumerate(items):
+            if not isinstance(d, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"items[{i}]: must be a dict, got {type(d).__name__}.",
+                )
+            unknown = set(d.keys()) - _known
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"items[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_known)}."
+                    ),
+                )
+
+        item_objs = [NumberedItem(**d) for d in items]
+
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_numbered_list(
+            slide,
+            item_objs,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            rule_between=rule_between,
+            theme=theme,
+        )
+
+        # Envelope invariant: result must have 'message' (#120).
+        # Shape references are python-pptx objects and aren't JSON-serialisable,
+        # so we expose only the per-item bounds and top-level sizes.
+        serialised = {
+            "items": [
+                {"bounds": entry["bounds"]}
+                for entry in result["items"]
+            ],
+            "consumed_height": result["consumed_height"],
+            "consumed_width": result["consumed_width"],
+            "message": f"Added numbered list with {len(items)} item(s)",
+        }
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            serialised["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            serialised["render_warning"] = render_info
+        return _success(serialised)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp_tool(mcp)
+def pptx_add_metric_card_row(
+    file_path: str,
+    slide_index: int,
+    cards: List[Dict[str, Any]],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    gap: float = 0.3,
+    theme: Optional[str] = None,
+) -> str:
+    """Add a row of N MetricCard block components side-by-side (#132).
+
+    Each card stacks, top-to-bottom: small ``label`` → ``title`` → chart
+    (image when ``chart_image_path`` set, else blank placeholder rectangle)
+    → optional metrics row with per-cell ``(label, value)`` pairs.
+
+    ``cards``: list of card dicts. Supported keys: ``label``, ``title``,
+    ``chart_image_path``, ``metrics`` (list of ``{"label","value"}`` dicts),
+    ``fill_color``, ``border_color``, ``border_width``, ``label_color``,
+    ``title_color``, ``metric_label_color``, ``metric_value_color``,
+    ``padding``, ``title_size_pt``, ``label_size_pt``,
+    ``metric_label_size_pt``, ``metric_value_size_pt``. Colors accept hex
+    (no ``#``) or theme tokens when ``theme`` is provided.
+
+    Returns a dict ``{"cards": [{"left","top","width","height"}, ...],
+    "consumed_height": <float>, "consumed_width": <float>}``. Auto-renders
+    a preview PNG only when ``PPTX_MCP_AUTO_RENDER=1``.
+    """
+    try:
+        if not isinstance(cards, list):
+            return _error(
+                "INVALID_PARAMETER",
+                "cards must be a list of dicts.",
+                parameter="cards",
+                hint="Pass a native list, e.g. [{\"label\":\"KPI\",\"title\":\"Revenue\"}].",
+                issue=132,
+            )
+
+        _card_known = {f.name for f in fields(MetricCardSpec)}
+        _metric_known = {f.name for f in fields(MetricEntry)}
+
+        card_specs: List[MetricCardSpec] = []
+        for i, spec in enumerate(cards):
+            if not isinstance(spec, dict):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"card[{i}]: must be a dict, got {type(spec).__name__}.",
+                )
+            unknown = set(spec.keys()) - _card_known
+            if unknown:
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"card[{i}]: unknown keys {sorted(unknown)}; "
+                        f"known keys: {sorted(_card_known)}."
+                    ),
+                )
+            # Validate + coerce nested metrics list.
+            metrics_raw = spec.get("metrics") or []
+            if not isinstance(metrics_raw, list):
+                raise EngineError(
+                    ErrorCode.INVALID_PARAMETER,
+                    (
+                        f"card[{i}].metrics must be a list of dicts, got "
+                        f"{type(metrics_raw).__name__}."
+                    ),
+                )
+            metric_objs: List[MetricEntry] = []
+            for j, m in enumerate(metrics_raw):
+                if not isinstance(m, dict):
+                    raise EngineError(
+                        ErrorCode.INVALID_PARAMETER,
+                        (
+                            f"card[{i}].metrics[{j}]: must be a dict, got "
+                            f"{type(m).__name__}."
+                        ),
+                    )
+                m_unknown = set(m.keys()) - _metric_known
+                if m_unknown:
+                    raise EngineError(
+                        ErrorCode.INVALID_PARAMETER,
+                        (
+                            f"card[{i}].metrics[{j}]: unknown keys "
+                            f"{sorted(m_unknown)}; known keys: "
+                            f"{sorted(_metric_known)}."
+                        ),
+                    )
+                metric_objs.append(MetricEntry(**m))
+
+            spec_copy = dict(spec)
+            spec_copy["metrics"] = metric_objs
+            card_specs.append(MetricCardSpec(**spec_copy))
+
+        prs = open_pptx(file_path)
+        slide = _get_slide(prs, slide_index)
+
+        result = add_metric_card_row(
+            slide,
+            card_specs,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            gap=gap,
+            theme=theme,
+        )
+
+        # Envelope invariant: result must have 'message' (#120).
+        result["message"] = f"Added metric card row ({len(card_specs)} cards)."
+
+        save_pptx(prs, file_path)
+
+        render_info = _auto_render(file_path, slide_index)
+        if render_info.get("rendered"):
+            result["preview_path"] = render_info.get("preview_path")
+        elif render_info.get("reason") != "disabled":
+            result["render_warning"] = render_info
+        return _success(result)
+    except Exception as e:
+        return _err(e)
+
+
 # --- Batch Build --------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_build_slide(
     file_path: str,
     spec: Dict[str, Any],
@@ -1182,7 +1719,7 @@ def pptx_build_slide(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_build_deck(
     file_path: str,
     slides: List[Dict[str, Any]],
@@ -1216,7 +1753,7 @@ def pptx_build_deck(
 
 # --- Connectors & Callouts ----------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_connector(
     file_path: str,
     slide_index: int,
@@ -1249,7 +1786,7 @@ def pptx_add_connector(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_callout(
     file_path: str,
     slide_index: int,
@@ -1288,7 +1825,7 @@ def pptx_add_callout(
 
 # --- Icons --------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_list_icons(
     category: str = "",
     search: str = "",
@@ -1310,7 +1847,7 @@ def pptx_list_icons(
         return _err(e)
 
 
-@mcp.tool()
+@mcp_tool(mcp, advanced=True)
 def pptx_add_icon(
     file_path: str,
     slide_index: int,
@@ -1337,7 +1874,7 @@ def pptx_add_icon(
 
 # --- Charts -------------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_add_chart(
     file_path: str,
     slide_index: int,
@@ -1378,7 +1915,7 @@ def pptx_add_chart(
 
 # --- Rendering ----------------------------------------------------
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_render_slide(
     file_path: str,
     slide_index: int = -1,
@@ -1431,7 +1968,7 @@ def _format_check_layout_summary(result: Dict[str, Any]) -> str:
     return f"Found {len(lines)} layout issues:\n" + "\n".join(lines)
 
 
-@mcp.tool()
+@mcp_tool(mcp)
 def pptx_check_layout(
     file_path: str,
     detailed: bool = False,

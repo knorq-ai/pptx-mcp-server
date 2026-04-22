@@ -49,7 +49,7 @@ from pptx_mcp_server.server import (
     pptx_format_table,
     pptx_add_content_slide,
     pptx_add_section_divider,
-    pptx_add_kpi_row,
+    pptx_add_kpi_row_legacy,
     pptx_add_bullet_block,
     pptx_add_image,
     pptx_render_slide,
@@ -108,35 +108,18 @@ class TestToolRegistration:
 
     def test_all_tools_registered(self):
         # FastMCP stores tools internally; list them via the _tool_manager.
-        # v0.3.1 (#108): dropped hardcoded "25 tools" drift. The expected
-        # list is a *subset* — new tools can be added without editing this
-        # assertion as long as the core tools stay registered.
+        # v0.3.1 (#108): dropped hardcoded "25 tools" drift.
+        # v0.6.0 (#137): tool tiering — advanced tools are hidden from
+        # the default registry (env-gate ``PPTX_MCP_INCLUDE_ADVANCED``).
+        # The expected list below therefore only contains **default-tier**
+        # tools so the assertion holds without setting the env var.
         tool_names = list(mcp._tool_manager._tools.keys())
         expected = [
             "pptx_create",
             "pptx_get_info",
             "pptx_read_slide",
-            "pptx_list_shapes",
             "pptx_add_slide",
-            "pptx_delete_slide",
-            "pptx_duplicate_slide",
-            "pptx_set_slide_background",
-            "pptx_set_dimensions",
-            "pptx_add_textbox",
-            "pptx_edit_text",
-            "pptx_add_paragraph",
-            "pptx_add_shape",
             "pptx_add_image",
-            "pptx_delete_shape",
-            "pptx_format_shape",
-            "pptx_add_table",
-            "pptx_edit_table_cell",
-            "pptx_edit_table_cells",
-            "pptx_format_table",
-            "pptx_add_content_slide",
-            "pptx_add_section_divider",
-            "pptx_add_kpi_row",
-            "pptx_add_bullet_block",
             "pptx_render_slide",
         ]
         for name in expected:
@@ -251,12 +234,12 @@ class TestStructuredParams:
 
     def test_add_kpi_row_with_native_list(self, deck):
         kpis = [{"value": "99", "label": "Score"}]
-        result = pptx_add_kpi_row(deck, 0, kpis, 2.0)
+        result = pptx_add_kpi_row_legacy(deck, 0, kpis, 2.0)
         payload = _unwrap_ok(result)
         assert "Added 1 KPI" in payload["message"]
 
     def test_add_kpi_row_wrong_type_rejected(self, deck):
-        result = pptx_add_kpi_row(deck, 0, "not a list", 2.0)  # type: ignore[arg-type]
+        result = pptx_add_kpi_row_legacy(deck, 0, "not a list", 2.0)  # type: ignore[arg-type]
         err = _unwrap_err(result)
         assert err["code"] == "INVALID_PARAMETER"
         assert err["parameter"] == "kpis"
@@ -770,7 +753,7 @@ class TestAutoRenderOptIn:
         monkeypatch.setattr(server_mod, "render_slide", fake_render)
 
         # invalid slide_index → add_kpi_row raises before _auto_render runs.
-        result = server_mod.pptx_add_kpi_row(
+        result = server_mod.pptx_add_kpi_row_legacy(
             deck, 999, [{"value": "1", "label": "x"}], 2.0
         )
         _unwrap_err(result)
@@ -942,7 +925,7 @@ class TestStrictNestedValidation:
 
     def test_kpi_row_rejects_unknown_key(self, deck):
         err = _unwrap_err(
-            pptx_add_kpi_row(
+            pptx_add_kpi_row_legacy(
                 deck,
                 slide_index=0,
                 kpis=[{"label": "x", "value": "y", "typo": 1}],
@@ -954,7 +937,7 @@ class TestStrictNestedValidation:
 
     def test_kpi_row_valid_still_works(self, deck):
         payload = _unwrap_ok(
-            pptx_add_kpi_row(
+            pptx_add_kpi_row_legacy(
                 deck,
                 slide_index=0,
                 kpis=[{"label": "Rev", "value": "100"}],
@@ -1080,9 +1063,13 @@ class TestNoStale25Tools:
     def test_no_hardcoded_25_tools_assertion(self):
         # v0.3.1 (#108): the test asserts that the live FastMCP
         # registration has at least the core tools, without a brittle
-        # hardcoded count. 37+ tools are registered today.
+        # hardcoded count.
+        # v0.6.0 (#137): with tool tiering, the default surface is
+        # ~20 tools (45 - 25 advanced). The historical > 25 bound no
+        # longer holds with tiering enabled, so the assertion now
+        # guards against accidental collapse of the default surface.
         tool_names = list(mcp._tool_manager._tools.keys())
-        assert len(tool_names) > 25, (
-            "FastMCP should register well beyond the historical 25-tool "
-            f"baseline — got {len(tool_names)}"
+        assert len(tool_names) >= 15, (
+            "Default MCP surface should register at least the block-"
+            f"component + batch tier — got {len(tool_names)}"
         )

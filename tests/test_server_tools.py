@@ -242,3 +242,31 @@ class TestResponsiveCardRowFileRoundTrip:
                 ):
                     inside += 1
             assert inside >= 1, f"placement {p} has no shapes inside"
+
+
+# =============================================================================
+# pptx_add_section_header envelope invariant (#120 / #136 regression)
+# =============================================================================
+
+
+class TestAddSectionHeaderMcpEnvelope:
+    """``pptx_add_section_header`` must include a ``message`` key in its
+    result dict, matching the v0.3.0 envelope invariant (#120)."""
+
+    def test_result_has_message_key(self, blank_pptx):
+        """Happy-path MCP call returns ``result["message"]`` (not silently dropped)."""
+        from pptx_mcp_server.server import pptx_add_section_header
+
+        out = pptx_add_section_header(
+            file_path=blank_pptx,
+            slide_index=0,
+            title="Section One",
+            subtitle="A subtitle line",
+        )
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert "message" in parsed["result"], (
+            "pptx_add_section_header must set result['message'] per envelope invariant (#120)."
+        )
+        assert isinstance(parsed["result"]["message"], str)
+        assert parsed["result"]["message"]  # non-empty
