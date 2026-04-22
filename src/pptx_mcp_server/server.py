@@ -735,7 +735,23 @@ def pptx_add_kpi_row_legacy(
     DEPRECATED (v0.6.0, #133): this is the legacy simple-callout variant.
     New callers should prefer the block-component ``pptx_add_kpi_row``,
     which supports theme tokens, optional card frames, detail lines, and
-    container-aware containment validation.
+    container-aware containment validation. This tool will be removed in
+    v0.7.0.
+
+    Migration to pptx_add_kpi_row (v0.6.0)::
+
+        # Before (legacy):
+        pptx_add_kpi_row(file_path, slide_index, kpis=[...], y=2.5)
+        # After:
+        pptx_add_kpi_row(
+            file_path, slide_index, kpis=[...],
+            left=0.5, top=2.5, width=12.0,
+        )
+
+    The new tool takes ``left`` / ``top`` / ``width`` (and optional
+    ``height``, ``gap``, ``card_fill``, ``card_border``, ``theme``) in
+    place of the single ``y`` parameter. Each KPI dict may now also carry
+    ``detail`` and ``value_color`` fields.
     """
     try:
         if not isinstance(kpis, list):

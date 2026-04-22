@@ -224,7 +224,7 @@ Affected tools (and replaced param names):
 | `pptx_build_slide` | `spec_json: str` | `spec: dict` |
 | `pptx_build_deck` | `slides_json: str` | `slides: list[dict]` |
 | `pptx_add_chart` | `chart_json: str` | `chart: dict` |
-| `pptx_add_kpi_row` | `kpis_json: str` | `kpis: list[dict]` |
+| `pptx_add_kpi_row_legacy` (was `pptx_add_kpi_row` pre-v0.6.0; see #133) | `kpis_json: str` | `kpis: list[dict]` |
 | `pptx_add_table` | `rows_json: str` + `col_widths_json: str` | `rows: list[list]` + `col_widths: list[float] \| None` |
 | `pptx_add_bullet_block` | `items_json: str` | `bullets: list[str]` |
 | `pptx_edit_table_cells` | `edits_json: str` | `edits: list[dict]` |
@@ -233,7 +233,8 @@ Affected tools (and replaced param names):
 
 > **BREAKING CHANGE (v0.2.0).** Composite tools
 > (`pptx_add_content_slide`, `pptx_build_slide`, `pptx_build_deck`,
-> `pptx_add_kpi_row`, `pptx_add_bullet_block`, `pptx_add_section_divider`,
+> `pptx_add_kpi_row` (renamed `pptx_add_kpi_row_legacy` in v0.6.0, see #133),
+> `pptx_add_bullet_block`, `pptx_add_section_divider`,
 > `pptx_add_responsive_card_row`, `pptx_add_connector`, `pptx_add_callout`,
 > `pptx_add_chart`, `pptx_add_icon`) previously forked LibreOffice to render
 > a PNG preview after every successful edit (~1.5s, no timeout, no off-switch).
@@ -308,7 +309,8 @@ directly — that tool is unaffected by this gate.
 | `pptx_build_slide` | Build a single slide from a JSON spec |
 | `pptx_add_content_slide` | Add a content slide with action title, divider, footnote, page number |
 | `pptx_add_section_divider` | Add a section divider slide with dark background and accent stripes |
-| `pptx_add_kpi_row` | Add a row of KPI callout boxes |
+| `pptx_add_kpi_row` | Add a row of N KPI cells (label / big value / optional detail) with optional card frames and theme-aware colors (block component, v0.6.0+) |
+| `pptx_add_kpi_row_legacy` | (Deprecated, removal in v0.7.0) Legacy 4-arg callout-box variant — was `pptx_add_kpi_row` prior to v0.6.0. Migrate to the block-component `pptx_add_kpi_row`. |
 | `pptx_add_bullet_block` | Add a bulleted text block with multiple items |
 | `pptx_add_responsive_card_row` | Add a row of auto-sized card shapes with title + body |
 | `pptx_add_connector` | Add a connector (straight / elbow / curve) with optional arrowheads |

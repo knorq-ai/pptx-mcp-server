@@ -13,6 +13,7 @@ from .container import (
 )
 from .kpi_row import (
     KPISpec,
+    # Aliased to avoid collision with legacy `engine.composites.add_kpi_row`.
     add_kpi_row as add_kpi_row_block,
 )
 
