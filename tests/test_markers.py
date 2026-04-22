@@ -133,6 +133,51 @@ def test_theme_ir_resolves_color(slide):
     assert run.font.color.rgb == RGBColor.from_string(expected)
 
 
+def test_page_marker_no_theme_does_not_crash(slide):
+    """theme=None with default ``color="text_secondary"`` must fall back to a
+    hardcoded hex instead of raising ``EngineError: Invalid color: #text_secondary``.
+
+    Regression for CQ review I1 on #135: the MCP tool default is ``theme=None``,
+    so any caller invoking ``pptx_add_page_marker(path, 0, "S", "P")`` without
+    a theme previously got a cryptic error.
+    """
+    slide_w = 13.333
+    slide_h = 7.5
+    spec = PageMarkerSpec(section="S", page="P")  # default color="text_secondary"
+
+    before = len(list(slide.shapes))
+    result = add_page_marker(
+        slide, spec,
+        slide_width=slide_w, slide_height=slide_h,
+        # theme=None (default)
+    )
+    after = len(list(slide.shapes))
+
+    # 2 shape 追加され、例外は起きない。
+    assert after - before == 2
+    assert result["section_shape"] is not None
+    assert result["page_shape"] is not None
+
+
+def test_slide_footer_no_theme_does_not_crash(slide):
+    """theme=None with default ``color="text_secondary"`` must succeed for footer."""
+    slide_w = 13.333
+    slide_h = 7.5
+    spec = SlideFooterSpec(left_text="L", right_text="R")  # default color
+
+    before = len(list(slide.shapes))
+    result = add_slide_footer(
+        slide, spec,
+        slide_width=slide_w, slide_height=slide_h,
+        # theme=None (default)
+    )
+    after = len(list(slide.shapes))
+
+    assert after - before == 2
+    assert result["left_shape"] is not None
+    assert result["right_shape"] is not None
+
+
 def test_mcp_tool_page_marker_roundtrip(tmp_path):
     """MCP ツール pptx_add_page_marker → save → 再オープンで shape が残る."""
     # server import は module level で重いため、テスト内で遅延 import する。

@@ -38,6 +38,37 @@ from typing import Optional
 # スライド左右端からの水平マージン。
 _MARGIN: float = 0.5
 
+# ---------------------------------------------------------------------------
+# theme=None fallback for well-known color tokens.
+#
+# ``add_auto_fit_textbox`` は ``color_hex`` が hex でない場合に
+# ``#<token>`` として parse しようとして落ちる。呼び出し側が theme を
+# 指定していれば ``resolve_theme_color`` がトークンを hex に変換するが、
+# MCP ツール経由では既定が ``theme=None`` のため、デフォルト
+# ``"text_secondary"`` だけで EngineError が出てしまう (#135 CQ review)。
+# ここでは timeline.py / MCKINSEY / IR と整合する最小の hex 代替を持ち、
+# ``theme`` 未指定時のみ差し替える。テーマが指定されていれば一切介入
+# しない (二重解決回避)。
+# ---------------------------------------------------------------------------
+_TOKEN_FALLBACK_HEX: dict[str, str] = {
+    "text_secondary": "666666",
+    "primary": "051C2C",
+    "rule_subtle": "E0E0E0",
+}
+
+
+def _resolve_color(token_or_hex: str, theme: Optional[str]) -> str:
+    """``theme`` 未指定時に既知のトークンを hex にフォールバックする.
+
+    ``theme`` が与えられていれば入力はそのまま返し、下流の
+    ``add_auto_fit_textbox`` が ``resolve_theme_color`` で解決する。
+    ``theme is None`` で入力が ``_TOKEN_FALLBACK_HEX`` のキーなら hex を
+    返す (MCKINSEY 系パレット)。未知の文字列はパススルー (hex と仮定)。
+    """
+    if theme:
+        return token_or_hex
+    return _TOKEN_FALLBACK_HEX.get(token_or_hex, token_or_hex)
+
 # Page marker (top-right)
 _PAGE_MARKER_TOP: float = 0.35           # 1 行目の top
 _PAGE_MARKER_TEXTBOX_W: float = 2.5      # 各行のテキストボックス幅
@@ -124,6 +155,7 @@ def add_page_marker(
     left = slide_width - _MARGIN - _PAGE_MARKER_TEXTBOX_W
     top1 = _PAGE_MARKER_TOP
     top2 = _PAGE_MARKER_TOP + _PAGE_MARKER_LINE_H
+    color = _resolve_color(spec.color, theme)
 
     section_shape, _ = add_auto_fit_textbox(
         slide,
@@ -133,7 +165,7 @@ def add_page_marker(
         width=_PAGE_MARKER_TEXTBOX_W,
         height=_PAGE_MARKER_LINE_H,
         font_size_pt=spec.font_size_pt,
-        color_hex=spec.color,
+        color_hex=color,
         align="right",
         wrap=False,
         theme=theme,
@@ -146,7 +178,7 @@ def add_page_marker(
         width=_PAGE_MARKER_TEXTBOX_W,
         height=_PAGE_MARKER_LINE_H,
         font_size_pt=spec.font_size_pt,
-        color_hex=spec.color,
+        color_hex=color,
         align="right",
         wrap=False,
         theme=theme,
@@ -195,6 +227,7 @@ def add_slide_footer(
     from ..shapes import add_auto_fit_textbox  # lazy: avoid circular import
 
     top = slide_height - _FOOTER_BOTTOM_OFFSET
+    color = _resolve_color(spec.color, theme)
 
     left_shape, _ = add_auto_fit_textbox(
         slide,
@@ -204,7 +237,7 @@ def add_slide_footer(
         width=_FOOTER_LEFT_W,
         height=_FOOTER_HEIGHT,
         font_size_pt=spec.font_size_pt,
-        color_hex=spec.color,
+        color_hex=color,
         align="left",
         wrap=False,
         theme=theme,
@@ -220,7 +253,7 @@ def add_slide_footer(
             width=_FOOTER_RIGHT_W,
             height=_FOOTER_HEIGHT,
             font_size_pt=spec.font_size_pt,
-            color_hex=spec.color,
+            color_hex=color,
             align="right",
             wrap=False,
             theme=theme,
